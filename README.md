@@ -17,7 +17,7 @@ If you want to build the Rust crate only, run:
 cargo build --release
 ```
 
-To use the library from Python, install a PyO3 build tool such as `maturin` or `setuptools-rust` and build a wheel in your environment. Network access to crates.io is required to download dependencies.
+To use the library from Python, install a PyO3 build tool such as `maturin` or `setuptools-rust` and build a wheel in your environment. Network access to crates.io is required to download dependencies. The bundled PyO3 dependency targets the stable CPython ABI for versions 3.8 through 3.13, so a system Python in that range is recommended when building wheels.
 
 ## Python usage
 ```python
