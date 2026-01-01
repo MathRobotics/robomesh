@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 pyo3 = { version = "0.20", features = ["extension-module"] }
 urdf-rs = "0.6"
-k = "0.33"
+k = "0.32"
 nalgebra = { version = "0.32", features = ["serde-serialize"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
