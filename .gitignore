@@ -3,3 +3,6 @@ target
 __pycache__/
 .idea/
 .vscode/
+.venv/
+python/.venv/
+python/uv.lock

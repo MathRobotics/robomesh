@@ -10,14 +10,17 @@ robomesh is a small Rust library that loads URDF models, applies joint trajector
 - Joint targets accepted as Python mappings, JSON strings, or CSV trajectory files
 - Single-frame PNG rendering or multi-frame trajectory export to a directory
 
-## Building
+## Building (Rust)
 If you want to build the Rust crate only, run:
 
 ```bash
 cargo build --release
 ```
 
-To use the library from Python, install a PyO3 build tool such as `maturin` or `setuptools-rust` and build a wheel in your environment. Network access to crates.io is required to download dependencies. The bundled PyO3 dependency targets the stable CPython ABI for versions 3.8 through 3.13, so a system Python in that range is recommended when building wheels.
+Network access to crates.io is required to download dependencies.
+
+## Python bindings
+Python packaging, virtual environments, and tooling are kept in a dedicated `python/` directory and are managed with [uv](https://github.com/astral-sh/uv) to keep the Rust workspace clean. See [`python/README.md`](python/README.md) for uv-based build and usage steps. The PyO3 dependency targets the stable CPython ABI for versions 3.8 through 3.13, so a Python in that range is recommended when building wheels.
 
 ## Python usage
 ```python
