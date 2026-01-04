@@ -10,7 +10,7 @@ use k::nalgebra::{
     point, vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3,
 };
 use k::Chain;
-use plotters::{prelude::*, series::LineSeries, series::PointSeries};
+use plotters::{prelude::*, style::ShapeStyle};
 use serde::Deserialize;
 use thiserror::Error;
 use urdf_rs::Robot;
@@ -307,44 +307,49 @@ fn draw_scene(
     visuals: &[VisualRect],
     output: &str,
 ) -> Result<(), RoboMeshError> {
-    let root_bounds = bounding_square(points, visuals);
-    let backend = BitMapBackend::new(output, (800, 800)).into_drawing_area();
+    let (min, max) = bounding_square(points, visuals);
+    let (width, height) = (800, 800);
+    let center = Point2::new((max.x + min.x) / 2.0, (max.y + min.y) / 2.0);
+    let world_half_range = ((max.x - min.x).abs().max((max.y - min.y).abs()) / 2.0).max(1.0);
+    let scale = 0.9 * (width.min(height) as f32) / (2.0 * world_half_range);
+
+    let backend = BitMapBackend::new(output, (width, height)).into_drawing_area();
     backend
         .fill(&WHITE)
         .map_err(|e| RoboMeshError::Render(e.to_string()))?;
-    let (min, max) = root_bounds;
-    let mut chart = ChartBuilder::on(&backend)
-        .margin(20)
-        .build_cartesian_2d(min.x..max.x, min.y..max.y)
-        .map_err(|e| RoboMeshError::Render(e.to_string()))?;
+
+    let mut draw_rect = |rect: &VisualRect| -> Result<(), RoboMeshError> {
+        let p_min = world_to_pixel(rect.min, center, scale, (width, height));
+        let p_max = world_to_pixel(rect.max, center, scale, (width, height));
+        backend
+            .draw(&Rectangle::new(
+                [p_min, p_max],
+                ShapeStyle::from(&GREEN.mix(0.4)).filled(),
+            ))
+            .map_err(|e| RoboMeshError::Render(e.to_string()))
+    };
 
     for rect in visuals {
-        chart
-            .draw_series(std::iter::once(Rectangle::new(
-                [(rect.min.x, rect.min.y), (rect.max.x, rect.max.y)],
-                ShapeStyle::from(&GREEN.mix(0.4)).filled(),
-            )))
-            .map_err(|e| RoboMeshError::Render(e.to_string()))?;
+        draw_rect(rect)?;
     }
 
     for (child, parent) in points {
         if let Some(parent) = parent {
             let c2 = Point2::new(child.x, child.z);
             let p2 = Point2::new(parent.x, parent.z);
-            chart
-                .draw_series(LineSeries::new(vec![(p2.x, p2.y), (c2.x, c2.y)], &BLUE))
+            let c_pix = world_to_pixel(c2, center, scale, (width, height));
+            let p_pix = world_to_pixel(p2, center, scale, (width, height));
+
+            backend
+                .draw(&PathElement::new(vec![p_pix, c_pix], &BLUE))
                 .map_err(|e| RoboMeshError::Render(e.to_string()))?;
-            chart
-                .draw_series(PointSeries::of_element(
-                    vec![(c2.x, c2.y)],
-                    3,
-                    &RED,
-                    &|c, s, st| {
-                        return EmptyElement::at(c)
-                            + Circle::new((0, 0), s, st.filled())
-                            + Circle::new((0, 0), s + 2, st.stroke_width(1));
-                    },
-                ))
+
+            let joint_style = ShapeStyle::from(&RED).stroke_width(1);
+            backend
+                .draw(&Circle::new(c_pix, 3, joint_style.filled()))
+                .map_err(|e| RoboMeshError::Render(e.to_string()))?;
+            backend
+                .draw(&Circle::new(c_pix, 5, joint_style))
                 .map_err(|e| RoboMeshError::Render(e.to_string()))?;
         }
     }
@@ -353,6 +358,17 @@ fn draw_scene(
         .present()
         .map_err(|e| RoboMeshError::Render(e.to_string()))?;
     Ok(())
+}
+
+fn world_to_pixel(
+    point: Point2<f32>,
+    center: Point2<f32>,
+    scale: f32,
+    dims: (i32, i32),
+) -> BackendCoord {
+    let x = (dims.0 as f32 / 2.0 + (point.x - center.x) * scale) as i32;
+    let y = (dims.1 as f32 / 2.0 - (point.y - center.y) * scale) as i32;
+    (x, y)
 }
 
 fn bounding_square(
