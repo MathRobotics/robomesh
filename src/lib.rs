@@ -4,11 +4,12 @@ use csv::StringRecord;
 use k::Chain;
 use nalgebra::{point, vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3};
 use plotters::prelude::*;
-use pyo3::exceptions::PyValueError;
-use pyo3::prelude::*;
 use serde::Deserialize;
 use thiserror::Error;
 use urdf_rs::Robot;
+
+#[cfg(feature = "python")]
+use pyo3::{exceptions::PyValueError, prelude::*};
 
 #[derive(Debug, Error)]
 pub enum RoboMeshError {
@@ -28,6 +29,7 @@ pub enum RoboMeshError {
     Mesh(String),
 }
 
+#[cfg(feature = "python")]
 impl From<RoboMeshError> for PyErr {
     fn from(value: RoboMeshError) -> Self {
         PyValueError::new_err(value.to_string())
@@ -41,13 +43,14 @@ pub struct JointFrame {
     pub time: Option<f32>,
 }
 
-#[pyclass]
+#[cfg_attr(feature = "python", pyclass)]
 pub struct RoboRenderer {
     chain: Chain<f32>,
     joint_names: Vec<String>,
     visuals: HashMap<String, Vec<VisualElement>>, // keyed by link name
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl RoboRenderer {
     #[new]
@@ -124,6 +127,7 @@ impl RoboRenderer {
     }
 }
 
+#[cfg(feature = "python")]
 fn parse_joint_map(obj: &PyAny) -> PyResult<HashMap<String, f32>> {
     if let Ok(map) = obj.extract::<HashMap<String, f32>>() {
         return Ok(map);
@@ -138,6 +142,7 @@ fn parse_joint_map(obj: &PyAny) -> PyResult<HashMap<String, f32>> {
     ))
 }
 
+#[cfg(feature = "python")]
 fn parse_trajectory(obj: &PyAny) -> PyResult<Vec<JointFrame>> {
     if let Ok(list) = obj.extract::<Vec<HashMap<String, f32>>>() {
         return Ok(list
@@ -597,6 +602,7 @@ fn bounds_from_stl(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboM
     Ok((min, max))
 }
 
+#[cfg(feature = "python")]
 #[pymodule]
 fn robomesh(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<RoboRenderer>()?;

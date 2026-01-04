@@ -1,6 +1,6 @@
 # robomesh
 
-robomesh is a small Rust library that loads URDF models, applies joint trajectories, and renders simple 2D top-view PNGs. The crate exposes PyO3 bindings so you can call it directly from Python for quick visualization or debugging workflows.
+robomesh is a small Rust library that loads URDF models, applies joint trajectories, and renders simple 2D top-view PNGs. The crate can expose PyO3 bindings (behind an optional Cargo feature) so you can call it directly from Python for quick visualization or debugging workflows.
 
 ## Features
 - URDF loading and forward kinematics via `urdf-rs` and the `k` crate
@@ -19,8 +19,14 @@ cargo build --release
 
 Network access to crates.io is required to download dependencies.
 
+To include the Python bindings in the build (e.g., when targeting a wheel), enable the `python` feature so that PyO3 is pulled in:
+
+```bash
+cargo build --release --features python
+```
+
 ## Python bindings
-Python packaging, virtual environments, and tooling are kept in a dedicated `python/` directory and are managed with [uv](https://github.com/astral-sh/uv) to keep the Rust workspace clean. See [`python/README.md`](python/README.md) for uv-based build and usage steps. The PyO3 dependency targets the stable CPython ABI for versions 3.8 through 3.13, so a Python in that range is recommended when building wheels.
+Python packaging, virtual environments, and tooling are kept in a dedicated `python/` directory and are managed with [uv](https://github.com/astral-sh/uv) to keep the Rust workspace clean. See [`python/README.md`](python/README.md) for uv-based build and usage steps. The PyO3 dependency targets the stable CPython ABI for versions 3.8 through 3.13 and is only pulled in when you build with the `python` Cargo feature (as done by `uv run maturin ... --features python`).
 
 ## Python usage
 ```python

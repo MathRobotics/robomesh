@@ -29,7 +29,7 @@ dependencies = []
 manifest-path = "../Cargo.toml"
 bindings = "pyo3"
 module-name = "robomesh"
-features = ["pyo3/extension-module"]
+features = ["python"]
 
 [tool.uv]
 dev-dependencies = [
