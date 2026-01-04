@@ -31,7 +31,7 @@ bindings = "pyo3"
 module-name = "robomesh"
 features = ["python"]
 
-[tool.uv.dependency-groups]
+[dependency-groups]
 dev = [
   "maturin>=1.6,<2.0",
 ]
