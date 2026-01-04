@@ -920,7 +920,6 @@ fn visual_to_element(
                 half_extents,
             }
         }
-        _ => return Ok(None),
     };
 
     Ok(Some(geometry))
