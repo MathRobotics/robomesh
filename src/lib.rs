@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "python"), allow(dead_code))]
+
 use std::{collections::HashMap, fs::File, path::PathBuf};
 
 #[cfg(feature = "python")]
