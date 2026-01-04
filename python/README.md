@@ -4,7 +4,7 @@ The Python bindings for `robomesh` live alongside the Rust crate but are managed
 
 ## Prerequisites
 - Rust toolchain (for building the extension module)
-- Python 3.8–3.13
+- Python 3.8–3.13 (PyO3 v0.22 in the Rust crate builds cleanly with 3.13)
 - [uv](https://github.com/astral-sh/uv) installed
 
 ## Getting started

@@ -26,7 +26,7 @@ cargo build --release --features python
 ```
 
 ## Python bindings
-Python packaging, virtual environments, and tooling are kept in a dedicated `python/` directory and are managed with [uv](https://github.com/astral-sh/uv) to keep the Rust workspace clean. See [`python/README.md`](python/README.md) for uv-based build and usage steps. The PyO3 dependency targets the stable CPython ABI for versions 3.8 through 3.13 and is only pulled in when you build with the `python` Cargo feature (as done by `uv run maturin ... --features python`).
+Python packaging, virtual environments, and tooling are kept in a dedicated `python/` directory and are managed with [uv](https://github.com/astral-sh/uv) to keep the Rust workspace clean. See [`python/README.md`](python/README.md) for uv-based build and usage steps. The PyO3 dependency (v0.22) targets the stable CPython ABI for versions 3.8 through 3.13 and is only pulled in when you build with the `python` Cargo feature (as done by `uv run maturin ... --features python`).
 
 ## Python usage
 ```python
