@@ -4,7 +4,7 @@ robomesh is a small Rust library that loads URDF models, applies joint trajector
 
 ## Features
 - URDF loading and forward kinematics via `urdf-rs` and the `k` crate
-- 2D top-view link rendering on the XZ plane using `plotters`
+- 2D top-view link rendering on the XZ plane using a lightweight image buffer backend (no font dependencies)
 - Visual geometry support, including mesh-based links (OBJ or STL) rendered as oriented projected bounding boxes
 - Python-facing `RoboRenderer` class implemented with PyO3
 - Joint targets accepted as Python mappings, JSON strings, or CSV trajectory files
