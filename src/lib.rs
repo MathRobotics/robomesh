@@ -1,15 +1,15 @@
 #![cfg_attr(not(feature = "python"), allow(dead_code))]
 
-use std::{collections::HashMap, fs::File, path::PathBuf};
+use std::{collections::HashMap, fs::File, path::PathBuf, time::SystemTime};
 
 #[cfg(feature = "python")]
-use std::fs;
+use std::{env, fs, process};
 
 use csv::StringRecord;
-use k::Chain;
 use k::nalgebra::{
     point, vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3,
 };
+use k::Chain;
 use plotters::{prelude::*, series::LineSeries, series::PointSeries};
 use serde::Deserialize;
 use thiserror::Error;
@@ -67,7 +67,7 @@ impl RoboRenderer {
         let chain =
             Chain::from_urdf_file(urdf_path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
         let visuals = load_visuals(&robot, Some(urdf_path))?;
-        let joint_names = chain.joints().iter().map(|j| j.name.clone()).collect();
+        let joint_names = chain.iter_joints().map(|j| j.name.clone()).collect();
         Ok(Self {
             chain,
             joint_names,
@@ -79,10 +79,9 @@ impl RoboRenderer {
     pub fn from_urdf_string(urdf: &str) -> PyResult<Self> {
         let robot = urdf_rs::read_from_string(urdf)
             .map_err(|e| PyErr::from(RoboMeshError::UrdfLoad(e.to_string())))?;
-        let chain = Chain::from_urdf_reader(urdf.as_bytes())
-            .map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
+        let chain = chain_from_urdf_str(urdf)?;
         let visuals = load_visuals(&robot, None)?;
-        let joint_names = chain.joints().iter().map(|j| j.name.clone()).collect();
+        let joint_names = chain.iter_joints().map(|j| j.name.clone()).collect();
         Ok(Self {
             chain,
             joint_names,
@@ -92,7 +91,11 @@ impl RoboRenderer {
 
     /// Render a single frame into a PNG file.
     /// `joint_positions` can be a mapping or JSON string.
-    pub fn render_frame(&mut self, joint_positions: &PyAny, output_path: &str) -> PyResult<()> {
+    pub fn render_frame(
+        &mut self,
+        joint_positions: &Bound<'_, PyAny>,
+        output_path: &str,
+    ) -> PyResult<()> {
         let map = parse_joint_map(joint_positions)?;
         apply_joint_map(&mut self.chain, &self.joint_names, &map)?;
         let skeleton = collect_points(&self.chain)?;
@@ -101,7 +104,11 @@ impl RoboRenderer {
     }
 
     /// Render a list of joint frames (list of dicts) into numbered PNG files.
-    pub fn render_trajectory(&mut self, trajectory: &PyAny, output_dir: &str) -> PyResult<()> {
+    pub fn render_trajectory(
+        &mut self,
+        trajectory: &Bound<'_, PyAny>,
+        output_dir: &str,
+    ) -> PyResult<()> {
         let frames = parse_trajectory(trajectory)?;
         fs::create_dir_all(output_dir)?;
         for (idx, frame) in frames.iter().enumerate() {
@@ -135,7 +142,7 @@ impl RoboRenderer {
 }
 
 #[cfg(feature = "python")]
-fn parse_joint_map(obj: &PyAny) -> PyResult<HashMap<String, f32>> {
+fn parse_joint_map(obj: &Bound<'_, PyAny>) -> PyResult<HashMap<String, f32>> {
     if let Ok(map) = obj.extract::<HashMap<String, f32>>() {
         return Ok(map);
     }
@@ -150,7 +157,7 @@ fn parse_joint_map(obj: &PyAny) -> PyResult<HashMap<String, f32>> {
 }
 
 #[cfg(feature = "python")]
-fn parse_trajectory(obj: &PyAny) -> PyResult<Vec<JointFrame>> {
+fn parse_trajectory(obj: &Bound<'_, PyAny>) -> PyResult<Vec<JointFrame>> {
     if let Ok(list) = obj.extract::<Vec<HashMap<String, f32>>>() {
         return Ok(list
             .into_iter()
@@ -168,6 +175,20 @@ fn parse_trajectory(obj: &PyAny) -> PyResult<Vec<JointFrame>> {
     Err(PyValueError::new_err(
         "trajectory must be a list of mappings or JSON string",
     ))
+}
+
+#[cfg(feature = "python")]
+fn chain_from_urdf_str(urdf: &str) -> PyResult<Chain<f32>> {
+    let mut path = env::temp_dir();
+    let unique = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?
+        .as_nanos();
+    path.push(format!("robomesh_{}_{}.urdf", process::id(), unique));
+    fs::write(&path, urdf).map_err(|e| PyErr::from(RoboMeshError::UrdfLoad(e.to_string())))?;
+    let chain = Chain::from_urdf_file(&path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
+    let _ = fs::remove_file(&path);
+    Ok(chain)
 }
 
 fn load_csv_trajectory(
@@ -614,7 +635,7 @@ fn bounds_from_stl(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboM
 
 #[cfg(feature = "python")]
 #[pymodule]
-fn robomesh(_py: Python, m: &PyModule) -> PyResult<()> {
+fn robomesh(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RoboRenderer>()?;
     Ok(())
 }
