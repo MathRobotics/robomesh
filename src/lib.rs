@@ -889,27 +889,27 @@ fn visual_to_element(
     let geometry = match &visual.geometry {
         urdf_rs::Geometry::Box { size } => VisualElement {
             transform: offset,
-            half_extents: vector![
+            half_extents: Vector3::new(
                 size[0] as f32 / 2.0,
                 size[1] as f32 / 2.0,
-                size[2] as f32 / 2.0
-            ],
+                size[2] as f32 / 2.0,
+            ),
         },
         urdf_rs::Geometry::Cylinder { radius, length } => VisualElement {
             transform: offset,
-            half_extents: vector![*radius as f32, *length as f32 / 2.0, *radius as f32],
+            half_extents: Vector3::new(*radius as f32, *length as f32 / 2.0, *radius as f32),
         },
         urdf_rs::Geometry::Capsule { radius, length } => VisualElement {
             transform: offset,
-            half_extents: vector![
+            half_extents: Vector3::new(
                 *radius as f32,
                 (*length as f32) / 2.0 + *radius as f32,
                 *radius as f32,
-            ],
+            ),
         },
         urdf_rs::Geometry::Sphere { radius } => VisualElement {
             transform: offset,
-            half_extents: vector![*radius as f32, *radius as f32, *radius as f32],
+            half_extents: Vector3::new(*radius as f32, *radius as f32, *radius as f32),
         },
         urdf_rs::Geometry::Mesh { filename, scale } => {
             let path = resolve_mesh_path(filename, base_dir);
