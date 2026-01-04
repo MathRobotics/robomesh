@@ -31,6 +31,9 @@ print("joint order:", renderer.joint_order())
 renderer.render_frame({"shoulder": 0.3, "elbow": -0.4}, "sample.png")
 renderer.render_trajectory_csv(sample_csv.as_posix(), "frames")
 PY
+
+# Or run the ready-made example script alongside the bundled URDF/CSV
+uv run python ../examples/python_example.py
 ```
 
 `uv sync` will read the `pyproject.toml` here, create a `.venv`, and install `maturin` as the only Python dependency needed to build the extension. You can add more runtime dependencies to `project.dependencies` if you extend the Python surface area.
