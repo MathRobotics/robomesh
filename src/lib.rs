@@ -315,13 +315,7 @@ fn draw_scene(
     let (min, max) = root_bounds;
     let mut chart = ChartBuilder::on(&backend)
         .margin(20)
-        .set_left_and_bottom_label_area_size(10)
         .build_cartesian_2d(min.x..max.x, min.y..max.y)
-        .map_err(|e| RoboMeshError::Render(e.to_string()))?;
-    chart
-        .configure_mesh()
-        .disable_mesh()
-        .draw()
         .map_err(|e| RoboMeshError::Render(e.to_string()))?;
 
     for rect in visuals {
