@@ -6,6 +6,7 @@ robomesh is a small Rust library that loads URDF models, applies joint trajector
 - URDF loading and forward kinematics via `urdf-rs` and the `k` crate
 - 2D top-view link rendering on the XZ plane using a lightweight image buffer backend (no font dependencies)
 - Visual geometry support, including mesh-based links (OBJ or STL) rendered as oriented projected bounding boxes
+- Primitive mesh generation helpers to convert URDF `box`/`cylinder`/`sphere` elements into triangle meshes for export, plus ellipsoid builders when you need stretched spheres
 - Python-facing `RoboRenderer` class implemented with PyO3
 - Joint targets accepted as Python mappings, JSON strings, or CSV trajectory files
 - Single-frame PNG rendering or multi-frame trajectory export to a directory
@@ -78,6 +79,24 @@ from a string (`from_urdf_string`), only absolute mesh paths will resolve correc
 - Each frame is saved as an 800x800 PNG showing link segments projected onto the XZ plane.
 - Mesh visuals (OBJ and STL) are loaded and projected as oriented bounding rectangles; if a mesh file cannot be found or parsed, rendering will report an error with the missing path.
 - All joints must be provided. Use `joint_order()` to verify the expected joint list before rendering.
+
+### Primitive mesh generation
+If you want full triangle meshes for URDF primitives (instead of the renderer's projected rectangles), you can build them directly in Rust:
+
+```rust
+use robomesh::{mesh_from_geometry, MeshData, MeshTessellation};
+
+let geom = urdf_rs::Geometry::Cylinder { radius: 0.05, length: 0.3 };
+let tess = MeshTessellation { cylinder_radial_segments: 48, ..Default::default() };
+let mesh: MeshData = mesh_from_geometry(&geom, &tess)?;
+mesh.write_obj("cylinder.obj")?; // Writes a vertex+face OBJ file
+
+// Build an ellipsoid with per-axis radii using the same tessellation controls
+let ellipsoid = generate_ellipsoid_mesh([0.1, 0.05, 0.2], &tess)?;
+ellipsoid.write_obj("ellipsoid.obj")?;
+```
+
+`mesh_from_visual` performs the same tessellation but also applies the visual's origin pose so that the returned vertices are in world coordinates. External mesh references (`<mesh>` tags) are left untouched because they already point to geometry files.
 
 ## License
 See [LICENSE](LICENSE).

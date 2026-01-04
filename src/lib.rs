@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "python"), allow(dead_code))]
 
-use std::{collections::HashMap, fs::File, path::PathBuf};
+use std::{collections::HashMap, fs::File, io::Write, path::PathBuf};
 
 #[cfg(feature = "python")]
 use std::{env, fs, process, time::SystemTime};
@@ -48,6 +48,70 @@ pub struct JointFrame {
     pub positions: HashMap<String, f32>,
     #[serde(default)]
     pub time: Option<f32>,
+}
+
+/// A triangle mesh with indexed faces. Vertices are specified in URDF space
+/// (right-handed, X forward, Y left, Z up).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshData {
+    pub vertices: Vec<[f32; 3]>,
+    pub indices: Vec<[u32; 3]>,
+}
+
+impl MeshData {
+    /// Apply an isometric transform to every vertex and return a new mesh.
+    pub fn transformed(&self, iso: &Isometry3<f32>) -> Self {
+        let vertices = self
+            .vertices
+            .iter()
+            .map(|v| {
+                let p = Point3::new(v[0], v[1], v[2]);
+                let t = iso.transform_point(&p);
+                [t.x, t.y, t.z]
+            })
+            .collect();
+        Self {
+            vertices,
+            indices: self.indices.clone(),
+        }
+    }
+
+    /// Write the mesh as a minimal OBJ file containing only vertices and
+    /// triangular faces. Faces are 1-indexed per the OBJ specification.
+    pub fn write_obj(&self, path: &str) -> Result<(), RoboMeshError> {
+        let mut file = File::create(path)
+            .map_err(|e| RoboMeshError::Io(std::io::Error::new(e.kind(), e.to_string())))?;
+        for v in &self.vertices {
+            writeln!(file, "v {} {} {}", v[0], v[1], v[2])
+                .map_err(|e| RoboMeshError::Io(std::io::Error::new(e.kind(), e.to_string())))?;
+        }
+        for tri in &self.indices {
+            writeln!(file, "f {} {} {}", tri[0] + 1, tri[1] + 1, tri[2] + 1)
+                .map_err(|e| RoboMeshError::Io(std::io::Error::new(e.kind(), e.to_string())))?;
+        }
+        Ok(())
+    }
+}
+
+/// Tessellation settings for primitive mesh generation. Higher segment counts
+/// yield smoother geometry at the cost of more triangles.
+#[derive(Clone, Debug)]
+pub struct MeshTessellation {
+    pub sphere_lat_segments: u32,
+    pub sphere_lon_segments: u32,
+    pub cylinder_radial_segments: u32,
+    pub cylinder_height_segments: u32,
+}
+
+impl Default for MeshTessellation {
+    fn default() -> Self {
+        Self {
+            sphere_lat_segments: 12,
+            sphere_lon_segments: 24,
+            cylinder_radial_segments: 32,
+            cylinder_height_segments: 1,
+        }
+    }
 }
 
 #[cfg_attr(feature = "python", pyclass)]
@@ -503,6 +567,193 @@ struct VisualElement {
 struct VisualRect {
     min: Point2<f32>,
     max: Point2<f32>,
+}
+
+/// Generate a triangle mesh for a URDF visual element. Primitive types are
+/// tessellated procedurally; existing mesh references are not re-sampled.
+/// The mesh is returned in world space if the visual contains an origin pose.
+pub fn mesh_from_visual(
+    visual: &urdf_rs::Visual,
+    tessellation: Option<&MeshTessellation>,
+) -> Result<MeshData, RoboMeshError> {
+    let tess = tessellation.cloned().unwrap_or_default();
+    let mesh = mesh_from_geometry(&visual.geometry, &tess)?;
+    let world = pose_to_isometry(&visual.origin);
+    Ok(mesh.transformed(&world))
+}
+
+/// Generate a triangle mesh from a URDF geometry primitive.
+pub fn mesh_from_geometry(
+    geometry: &urdf_rs::Geometry,
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    match geometry {
+        urdf_rs::Geometry::Box { size } => Ok(generate_box_mesh(size)),
+        urdf_rs::Geometry::Cylinder { radius, length } => {
+            generate_cylinder_mesh(*radius as f32, *length as f32, tessellation)
+        }
+        urdf_rs::Geometry::Sphere { radius } => generate_sphere_mesh(*radius as f32, tessellation),
+        urdf_rs::Geometry::Mesh { .. } => Err(RoboMeshError::Invalid(
+            "Mesh geometry references existing mesh files; nothing to generate".into(),
+        )),
+    }
+}
+
+fn generate_box_mesh(size: &[f64; 3]) -> MeshData {
+    let hx = (size[0] as f32) / 2.0;
+    let hy = (size[1] as f32) / 2.0;
+    let hz = (size[2] as f32) / 2.0;
+
+    let vertices = vec![
+        [hx, hy, hz],
+        [hx, hy, -hz],
+        [hx, -hy, hz],
+        [hx, -hy, -hz],
+        [-hx, hy, hz],
+        [-hx, hy, -hz],
+        [-hx, -hy, hz],
+        [-hx, -hy, -hz],
+    ];
+
+    let indices = vec![
+        [0, 2, 1],
+        [1, 2, 3], // +X
+        [4, 5, 6],
+        [5, 7, 6], // -X
+        [0, 1, 4],
+        [1, 5, 4], // +Y
+        [2, 6, 3],
+        [3, 6, 7], // -Y
+        [0, 4, 2],
+        [2, 4, 6], // +Z
+        [1, 3, 5],
+        [3, 7, 5], // -Z
+    ];
+
+    MeshData { vertices, indices }
+}
+
+fn generate_cylinder_mesh(
+    radius: f32,
+    length: f32,
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    let radial = tessellation.cylinder_radial_segments.max(3);
+    let height_segments = tessellation.cylinder_height_segments.max(1);
+    let half = length / 2.0;
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    // Rings along the Z axis.
+    for h in 0..=height_segments {
+        let z = -half + (length * h as f32) / (height_segments as f32);
+        for i in 0..radial {
+            let theta = 2.0 * std::f32::consts::PI * (i as f32) / (radial as f32);
+            let (s, c) = theta.sin_cos();
+            vertices.push([radius * c, radius * s, z]);
+        }
+    }
+
+    // Side quads
+    for h in 0..height_segments {
+        let ring_start = h * radial;
+        let next_ring = (h + 1) * radial;
+        for i in 0..radial {
+            let next = (i + 1) % radial;
+            let i0 = ring_start + i;
+            let i1 = ring_start + next;
+            let i2 = next_ring + i;
+            let i3 = next_ring + next;
+            indices.push([i0, i1, i3]);
+            indices.push([i0, i3, i2]);
+        }
+    }
+
+    let bottom_center = vertices.len() as u32;
+    vertices.push([0.0, 0.0, -half]);
+    let top_center = vertices.len() as u32;
+    vertices.push([0.0, 0.0, half]);
+
+    // Caps
+    for i in 0..radial {
+        let next = (i + 1) % radial;
+        // Bottom
+        indices.push([bottom_center, (next) as u32, i as u32]);
+        // Top
+        let top_i = (height_segments * radial + i) as u32;
+        let top_next = (height_segments * radial + next) as u32;
+        indices.push([top_center, top_i, top_next]);
+    }
+
+    Ok(MeshData { vertices, indices })
+}
+
+fn generate_sphere_mesh(
+    radius: f32,
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    generate_spheroid_mesh([radius, radius, radius], tessellation)
+}
+
+/// Generate a tessellated ellipsoid (a stretched sphere) with independent X/Y/Z
+/// radii.
+pub fn generate_ellipsoid_mesh(
+    radii: [f32; 3],
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    generate_spheroid_mesh(radii, tessellation)
+}
+
+fn generate_spheroid_mesh(
+    radii: [f32; 3],
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    if radii.iter().any(|r| *r <= 0.0) {
+        return Err(RoboMeshError::Invalid(
+            "Ellipsoid radii must be positive".to_string(),
+        ));
+    }
+
+    let lats = tessellation.sphere_lat_segments.max(3);
+    let lons = tessellation.sphere_lon_segments.max(3);
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    let [rx, ry, rz] = radii;
+
+    for lat in 0..=lats {
+        let v = lat as f32 / lats as f32;
+        let theta = std::f32::consts::PI * v;
+        let sin_theta = theta.sin();
+        let cos_theta = theta.cos();
+
+        for lon in 0..=lons {
+            let u = lon as f32 / lons as f32;
+            let phi = 2.0 * std::f32::consts::PI * u;
+            let (s, c) = phi.sin_cos();
+            let x = rx * sin_theta * c;
+            let y = ry * sin_theta * s;
+            let z = rz * cos_theta;
+            vertices.push([x, y, z]);
+        }
+    }
+
+    let ring = lons + 1;
+    for lat in 0..lats {
+        for lon in 0..lons {
+            let current = lat * ring + lon;
+            let next = current + ring;
+
+            if lat != 0 {
+                indices.push([current, next, current + 1]);
+            }
+            if lat != lats - 1 {
+                indices.push([current + 1, next, next + 1]);
+            }
+        }
+    }
+
+    Ok(MeshData { vertices, indices })
 }
 
 fn collect_visual_rects(
