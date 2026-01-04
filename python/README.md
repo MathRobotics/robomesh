@@ -19,9 +19,17 @@ uv run maturin develop --manifest-path ../Cargo.toml --features python
 
 # Try rendering from Python
 uv run python - <<'PY'
+from pathlib import Path
 from robomesh import RoboRenderer
-r = RoboRenderer("path/to/robot.urdf")
-print("joint order:", r.joint_order())
+
+repo_root = Path(__file__).resolve().parent.parent
+sample_urdf = repo_root / "examples" / "two_link.urdf"
+sample_csv = repo_root / "examples" / "wave.csv"
+
+renderer = RoboRenderer(sample_urdf.as_posix())
+print("joint order:", renderer.joint_order())
+renderer.render_frame({"shoulder": 0.3, "elbow": -0.4}, "sample.png")
+renderer.render_trajectory_csv(sample_csv.as_posix(), "frames")
 PY
 ```
 

@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<robot name="robomesh_two_link">
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.15 0.15 0.02"/>
+      </geometry>
+      <material name="base_gray">
+        <color rgba="0.5 0.5 0.5 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <link name="upper_link">
+    <visual>
+      <origin xyz="0 0 0.15" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.02" length="0.3"/>
+      </geometry>
+      <material name="blue">
+        <color rgba="0.2 0.4 0.8 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <link name="forearm_link">
+    <visual>
+      <origin xyz="0 0 0.15" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.018" length="0.3"/>
+      </geometry>
+      <material name="orange">
+        <color rgba="0.9 0.5 0.2 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="shoulder" type="revolute">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="upper_link"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+
+  <joint name="elbow" type="revolute">
+    <origin xyz="0 0 0.3" rpy="0 0 0"/>
+    <parent link="upper_link"/>
+    <child link="forearm_link"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+</robot>
