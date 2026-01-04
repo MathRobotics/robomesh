@@ -35,27 +35,27 @@ from pathlib import Path
 from robomesh import RoboRenderer
 
 repo_root = Path(__file__).resolve().parent
-sample_urdf = repo_root / "examples" / "two_link.urdf"
+sample_urdf = repo_root / "examples" / "three_link_capsule.urdf"
 sample_csv = repo_root / "examples" / "wave.csv"
 
 renderer = RoboRenderer(sample_urdf.as_posix())
 print("joint order:", renderer.joint_order())
 
 # Render a single frame of the sample arm
-renderer.render_frame({"shoulder": 0.35, "elbow": -0.55}, "frame.png")
+renderer.render_frame({"shoulder": 0.35, "elbow": -0.55, "wrist": 0.25}, "frame.png")
 
 # Render multiple frames (trajectory)
 trajectory = [
-    {"shoulder": 0.0, "elbow": 0.0},
-    {"shoulder": 0.45, "elbow": 0.25},
-    {"shoulder": -0.2, "elbow": 0.4},
+    {"shoulder": 0.0, "elbow": 0.0, "wrist": 0.0},
+    {"shoulder": 0.45, "elbow": 0.25, "wrist": -0.2},
+    {"shoulder": -0.2, "elbow": 0.4, "wrist": 0.35},
 ]
 renderer.render_trajectory(trajectory, "frames")
 
 # JSON strings are also accepted
 json_traj = json.dumps([
-    {"shoulder": 0.0, "elbow": 0.0},
-    {"shoulder": 0.3, "elbow": 0.1},
+    {"shoulder": 0.0, "elbow": 0.0, "wrist": 0.0},
+    {"shoulder": 0.3, "elbow": 0.1, "wrist": 0.4},
 ])
 renderer.render_trajectory(json_traj, "frames_from_json")
 
@@ -63,7 +63,7 @@ renderer.render_trajectory(json_traj, "frames_from_json")
 renderer.render_trajectory_csv(sample_csv.as_posix(), "frames_from_csv")
 ```
 
-The `examples/` directory contains a tiny two-link arm URDF (`two_link.urdf`) and a short CSV trajectory (`wave.csv`) so you can try the renderer without hunting for assets. The sample uses simple geometry (boxes and cylinders), so there are no extra mesh files to resolve.
+The `examples/` directory contains a small three-link arm URDF (`three_link_capsule.urdf`) built from capsule geometry (cylinders with spherical end-caps) and a short CSV trajectory (`wave.csv`) so you can try the renderer without hunting for assets. The sample uses only built-in primitive geometry, so there are no extra mesh files to resolve.
 
 Mesh files referenced by the URDF are resolved relative to the URDF file location when using `RoboRenderer(path)`. When loading
 from a string (`from_urdf_string`), only absolute mesh paths will resolve correctly.
