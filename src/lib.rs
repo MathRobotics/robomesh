@@ -6,11 +6,11 @@ use std::{collections::HashMap, fs::File, path::PathBuf};
 use std::{env, fs, process, time::SystemTime};
 
 use csv::StringRecord;
+use image::{ImageBuffer, Rgba};
 use k::nalgebra::{
     point, vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3,
 };
 use k::Chain;
-use plotters::{prelude::*, style::ShapeStyle};
 use serde::Deserialize;
 use thiserror::Error;
 use urdf_rs::Robot;
@@ -308,25 +308,19 @@ fn draw_scene(
     output: &str,
 ) -> Result<(), RoboMeshError> {
     let (min, max) = bounding_square(points, visuals);
-    let (width, height) = (800i32, 800i32);
+    let (width, height) = (800u32, 800u32);
     let center = Point2::new((max.x + min.x) / 2.0, (max.y + min.y) / 2.0);
     let world_half_range = ((max.x - min.x).abs().max((max.y - min.y).abs()) / 2.0).max(1.0);
     let scale = 0.9 * (width.min(height) as f32) / (2.0 * world_half_range);
 
-    let backend = BitMapBackend::new(output, (width as u32, height as u32)).into_drawing_area();
-    backend
-        .fill(&WHITE)
-        .map_err(|e| RoboMeshError::Render(e.to_string()))?;
+    let mut canvas: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_pixel(width, height, Rgba([255, 255, 255, 255]));
 
     let mut draw_rect = |rect: &VisualRect| -> Result<(), RoboMeshError> {
         let p_min = world_to_pixel(rect.min, center, scale, (width, height));
         let p_max = world_to_pixel(rect.max, center, scale, (width, height));
-        backend
-            .draw(&Rectangle::new(
-                [p_min, p_max],
-                ShapeStyle::from(&GREEN.mix(0.4)).filled(),
-            ))
-            .map_err(|e| RoboMeshError::Render(e.to_string()))
+        fill_rect(&mut canvas, p_min, p_max, Rgba([0, 255, 0, 102]));
+        Ok(())
     };
 
     for rect in visuals {
@@ -340,35 +334,120 @@ fn draw_scene(
             let c_pix = world_to_pixel(c2, center, scale, (width, height));
             let p_pix = world_to_pixel(p2, center, scale, (width, height));
 
-            backend
-                .draw(&PathElement::new(vec![p_pix, c_pix], &BLUE))
-                .map_err(|e| RoboMeshError::Render(e.to_string()))?;
-
-            let joint_style = ShapeStyle::from(&RED).stroke_width(1);
-            backend
-                .draw(&Circle::new(c_pix, 3, joint_style.filled()))
-                .map_err(|e| RoboMeshError::Render(e.to_string()))?;
-            backend
-                .draw(&Circle::new(c_pix, 5, joint_style))
-                .map_err(|e| RoboMeshError::Render(e.to_string()))?;
+            draw_line(&mut canvas, p_pix, c_pix, Rgba([0, 0, 255, 255]));
+            draw_circle(&mut canvas, c_pix, 3, true, Rgba([255, 0, 0, 255]));
+            draw_circle(&mut canvas, c_pix, 5, false, Rgba([255, 0, 0, 255]));
         }
     }
 
-    backend
-        .present()
-        .map_err(|e| RoboMeshError::Render(e.to_string()))?;
-    Ok(())
+    canvas
+        .save(output)
+        .map_err(|e| RoboMeshError::Render(e.to_string()))
 }
 
 fn world_to_pixel(
     point: Point2<f32>,
     center: Point2<f32>,
     scale: f32,
-    dims: (i32, i32),
+    dims: (u32, u32),
 ) -> (i32, i32) {
     let x = (dims.0 as f32 / 2.0 + (point.x - center.x) * scale) as i32;
     let y = (dims.1 as f32 / 2.0 - (point.y - center.y) * scale) as i32;
     (x, y)
+}
+
+fn blend_pixel(canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, x: i32, y: i32, color: Rgba<u8>) {
+    if x < 0 || y < 0 {
+        return;
+    }
+    let (w, h) = canvas.dimensions();
+    let (xu, yu) = (x as u32, y as u32);
+    if xu >= w || yu >= h {
+        return;
+    }
+
+    let dest = canvas.get_pixel_mut(xu, yu);
+    let alpha = color[3] as f32 / 255.0;
+    for i in 0..3 {
+        dest[i] = ((color[i] as f32 * alpha) + (dest[i] as f32 * (1.0 - alpha)))
+            .round()
+            .clamp(0.0, 255.0) as u8;
+    }
+    dest[3] = 255;
+}
+
+fn fill_rect(
+    canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    p_min: (i32, i32),
+    p_max: (i32, i32),
+    color: Rgba<u8>,
+) {
+    let x_start = p_min.0.min(p_max.0).max(0) as u32;
+    let x_end = p_min.0.max(p_max.0).min(canvas.width() as i32 - 1) as u32;
+    let y_start = p_min.1.min(p_max.1).max(0) as u32;
+    let y_end = p_min.1.max(p_max.1).min(canvas.height() as i32 - 1) as u32;
+
+    for y in y_start..=y_end {
+        for x in x_start..=x_end {
+            blend_pixel(canvas, x as i32, y as i32, color);
+        }
+    }
+}
+
+fn draw_line(
+    canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    start: (i32, i32),
+    end: (i32, i32),
+    color: Rgba<u8>,
+) {
+    let (mut x0, mut y0) = start;
+    let (x1, y1) = end;
+
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+
+    loop {
+        blend_pixel(canvas, x0, y0, color);
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+fn draw_circle(
+    canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    center: (i32, i32),
+    radius: i32,
+    filled: bool,
+    color: Rgba<u8>,
+) {
+    let r_sq = radius * radius;
+    let band = radius.max(1);
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let dist_sq = dx * dx + dy * dy;
+            let should_draw = if filled {
+                dist_sq <= r_sq
+            } else {
+                dist_sq >= r_sq - band && dist_sq <= r_sq + band
+            };
+            if should_draw {
+                blend_pixel(canvas, center.0 + dx, center.1 + dy, color);
+            }
+        }
+    }
 }
 
 fn bounding_square(
