@@ -1,9 +1,14 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::HashMap, fs::File, path::PathBuf};
+
+#[cfg(feature = "python")]
+use std::fs;
 
 use csv::StringRecord;
 use k::Chain;
-use nalgebra::{point, vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3};
-use plotters::prelude::*;
+use k::nalgebra::{
+    point, vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3,
+};
+use plotters::{prelude::*, series::LineSeries, series::PointSeries};
 use serde::Deserialize;
 use thiserror::Error;
 use urdf_rs::Robot;
@@ -298,10 +303,10 @@ fn draw_scene(
 
     for rect in visuals {
         chart
-            .draw_series(Rectangle::new(
+            .draw_series(std::iter::once(Rectangle::new(
                 [(rect.min.x, rect.min.y), (rect.max.x, rect.max.y)],
                 ShapeStyle::from(&GREEN.mix(0.4)).filled(),
-            ))
+            )))
             .map_err(|e| RoboMeshError::Render(e.to_string()))?;
     }
 
@@ -397,7 +402,7 @@ fn collect_visual_rects(
         let world = link
             .world_transform()
             .ok_or_else(|| RoboMeshError::Render("missing transform".into()))?;
-        if let Some(link_visuals) = visuals.get(link.name()) {
+        if let Some(link_visuals) = link.joint().and_then(|j| visuals.get(&j.name)) {
             for vis in link_visuals {
                 let world_vis = world * vis.transform;
                 rects.push(rect_from_box(&world_vis, vis.half_extents));
@@ -577,7 +582,9 @@ fn bounds_from_obj(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboM
 }
 
 fn bounds_from_stl(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboMeshError> {
-    let stl = stl_io::read_file(path)
+    let mut file = File::open(path)
+        .map_err(|e| RoboMeshError::Mesh(format!("Failed to load STL {}: {e}", path.display())))?;
+    let stl = stl_io::read_stl(&mut file)
         .map_err(|e| RoboMeshError::Mesh(format!("Failed to load STL {}: {e}", path.display())))?;
 
     let mut min = vector![f32::INFINITY, f32::INFINITY, f32::INFINITY];
