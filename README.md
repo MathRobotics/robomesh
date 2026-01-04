@@ -4,7 +4,7 @@ robomesh is a small Rust library that loads URDF models, applies joint trajector
 
 ## Features
 - URDF loading and forward kinematics via `urdf-rs` and the `k` crate
-- 2D top-view link rendering on the XZ plane using `plotters`
+- 2D top-view link rendering on the XZ plane using a lightweight image buffer backend (no font dependencies)
 - Visual geometry support, including mesh-based links (OBJ or STL) rendered as oriented projected bounding boxes
 - Python-facing `RoboRenderer` class implemented with PyO3
 - Joint targets accepted as Python mappings, JSON strings, or CSV trajectory files
@@ -31,32 +31,39 @@ Python packaging, virtual environments, and tooling are kept in a dedicated `pyt
 ## Python usage
 ```python
 import json
+from pathlib import Path
 from robomesh import RoboRenderer
 
-renderer = RoboRenderer("path/to/robot.urdf")
+repo_root = Path(__file__).resolve().parent
+sample_urdf = repo_root / "examples" / "three_link_capsule.urdf"
+sample_csv = repo_root / "examples" / "wave.csv"
+
+renderer = RoboRenderer(sample_urdf.as_posix())
 print("joint order:", renderer.joint_order())
 
-# Render a single frame
-actions = {"joint1": 0.2, "joint2": -0.1, "joint3": 0.0}
-renderer.render_frame(actions, "frame.png")
+# Render a single frame of the sample arm
+renderer.render_frame({"shoulder": 0.35, "elbow": -0.55, "wrist": 0.25}, "frame.png")
 
 # Render multiple frames (trajectory)
 trajectory = [
-    {"joint1": 0.0, "joint2": 0.0, "joint3": 0.0},
-    {"joint1": 0.1, "joint2": -0.2, "joint3": 0.0},
+    {"shoulder": 0.0, "elbow": 0.0, "wrist": 0.0},
+    {"shoulder": 0.45, "elbow": 0.25, "wrist": -0.2},
+    {"shoulder": -0.2, "elbow": 0.4, "wrist": 0.35},
 ]
 renderer.render_trajectory(trajectory, "frames")
 
 # JSON strings are also accepted
 json_traj = json.dumps([
-    {"joint1": 0.0, "joint2": 0.0},
-    {"joint1": 0.3, "joint2": 0.1},
+    {"shoulder": 0.0, "elbow": 0.0, "wrist": 0.0},
+    {"shoulder": 0.3, "elbow": 0.1, "wrist": 0.4},
 ])
 renderer.render_trajectory(json_traj, "frames_from_json")
 
 # Load a CSV trajectory (headers must match joint names; optional "time" column is ignored for rendering)
-renderer.render_trajectory_csv("trajectory.csv", "frames_from_csv")
+renderer.render_trajectory_csv(sample_csv.as_posix(), "frames_from_csv")
 ```
+
+The `examples/` directory contains a small three-link arm URDF (`three_link_capsule.urdf`) built from capsule geometry (cylinders with spherical end-caps) and a short CSV trajectory (`wave.csv`) so you can try the renderer without hunting for assets. The sample uses only built-in primitive geometry, so there are no extra mesh files to resolve.
 
 Mesh files referenced by the URDF are resolved relative to the URDF file location when using `RoboRenderer(path)`. When loading
 from a string (`from_urdf_string`), only absolute mesh paths will resolve correctly.
