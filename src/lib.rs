@@ -402,7 +402,8 @@ fn collect_visual_rects(
         let world = link
             .world_transform()
             .ok_or_else(|| RoboMeshError::Render("missing transform".into()))?;
-        if let Some(link_visuals) = link.joint().and_then(|j| visuals.get(&j.name)) {
+        let joint = link.joint();
+        if let Some(link_visuals) = visuals.get(&joint.name) {
             for vis in link_visuals {
                 let world_vis = world * vis.transform;
                 rects.push(rect_from_box(&world_vis, vis.half_extents));
