@@ -1031,6 +1031,49 @@ fn bounds_from_stl(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboM
     Ok((min, max))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capsule_half_extents_include_caps() {
+        let visual = urdf_rs::Visual {
+            name: None,
+            origin: urdf_rs::Pose::default(),
+            geometry: urdf_rs::Geometry::Capsule {
+                radius: 0.5,
+                length: 1.0,
+            },
+            material: None,
+        };
+
+        let element = visual_to_element(&visual, None).unwrap().unwrap();
+        assert_eq!(
+            element.half_extents,
+            vector![0.5, 1.0, 0.5],
+            "Capsule half extents should include both spherical caps",
+        );
+        let translation = element.transform.translation.vector;
+        assert_eq!(translation, vector![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn capsule_requires_valid_dimensions() {
+        let tess = MeshTessellation::default();
+        assert!(generate_capsule_mesh(0.0, 1.0, &tess).is_err());
+        assert!(generate_capsule_mesh(1.0, 1.0, &tess).is_err());
+    }
+
+    #[test]
+    fn capsule_reduces_to_sphere_when_cylinder_collapses() {
+        let tess = MeshTessellation::default();
+        let expected = generate_sphere_mesh(1.0, &tess).unwrap();
+        let actual = generate_capsule_mesh(1.0, 2.0, &tess).unwrap();
+        assert_eq!(expected.vertices, actual.vertices);
+        assert_eq!(expected.indices, actual.indices);
+    }
+}
+
 #[cfg(feature = "python")]
 #[pymodule]
 fn robomesh(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
