@@ -308,12 +308,12 @@ fn draw_scene(
     output: &str,
 ) -> Result<(), RoboMeshError> {
     let (min, max) = bounding_square(points, visuals);
-    let (width, height) = (800, 800);
+    let (width, height) = (800i32, 800i32);
     let center = Point2::new((max.x + min.x) / 2.0, (max.y + min.y) / 2.0);
     let world_half_range = ((max.x - min.x).abs().max((max.y - min.y).abs()) / 2.0).max(1.0);
     let scale = 0.9 * (width.min(height) as f32) / (2.0 * world_half_range);
 
-    let backend = BitMapBackend::new(output, (width, height)).into_drawing_area();
+    let backend = BitMapBackend::new(output, (width as u32, height as u32)).into_drawing_area();
     backend
         .fill(&WHITE)
         .map_err(|e| RoboMeshError::Render(e.to_string()))?;
@@ -365,7 +365,7 @@ fn world_to_pixel(
     center: Point2<f32>,
     scale: f32,
     dims: (i32, i32),
-) -> BackendCoord {
+) -> (i32, i32) {
     let x = (dims.0 as f32 / 2.0 + (point.x - center.x) * scale) as i32;
     let y = (dims.1 as f32 / 2.0 - (point.y - center.y) * scale) as i32;
     (x, y)
