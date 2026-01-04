@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "python"), allow(dead_code))]
 
-use std::{collections::HashMap, fs::File, path::PathBuf, time::SystemTime};
+use std::{collections::HashMap, fs::File, path::PathBuf};
 
 #[cfg(feature = "python")]
 use std::{env, fs, process};
