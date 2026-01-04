@@ -91,6 +91,18 @@ impl MeshData {
         }
         Ok(())
     }
+
+    /// Append another mesh, offsetting the face indices to remain valid.
+    fn append(&mut self, other: &MeshData) {
+        let offset = self.vertices.len() as u32;
+        self.vertices.extend(other.vertices.iter().copied());
+        self.indices.extend(
+            other
+                .indices
+                .iter()
+                .map(|[a, b, c]| [a + offset, b + offset, c + offset]),
+        );
+    }
 }
 
 /// Tessellation settings for primitive mesh generation. Higher segment counts
@@ -592,6 +604,9 @@ pub fn mesh_from_geometry(
         urdf_rs::Geometry::Cylinder { radius, length } => {
             generate_cylinder_mesh(*radius as f32, *length as f32, tessellation)
         }
+        urdf_rs::Geometry::Capsule { radius, length } => {
+            generate_capsule_mesh(*radius as f32, *length as f32, tessellation)
+        }
         urdf_rs::Geometry::Sphere { radius } => generate_sphere_mesh(*radius as f32, tessellation),
         urdf_rs::Geometry::Mesh { .. } => Err(RoboMeshError::Invalid(
             "Mesh geometry references existing mesh files; nothing to generate".into(),
@@ -686,6 +701,41 @@ fn generate_cylinder_mesh(
     }
 
     Ok(MeshData { vertices, indices })
+}
+
+fn generate_capsule_mesh(
+    radius: f32,
+    length: f32,
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    if radius <= 0.0 {
+        return Err(RoboMeshError::Invalid(
+            "Capsule radius must be positive".into(),
+        ));
+    }
+    if length <= 0.0 {
+        return Err(RoboMeshError::Invalid(
+            "Capsule length must be positive".into(),
+        ));
+    }
+
+    let cyl_length = length - 2.0 * radius;
+    if cyl_length < 0.0 {
+        return Err(RoboMeshError::Invalid(
+            "Capsule length must be at least twice the radius".into(),
+        ));
+    }
+    if cyl_length == 0.0 {
+        return generate_sphere_mesh(radius, tessellation);
+    }
+
+    let mut mesh = generate_cylinder_mesh(radius, cyl_length, tessellation)?;
+    let cap_mesh = generate_sphere_mesh(radius, tessellation)?;
+    let cap_offset = cyl_length / 2.0 + radius;
+    mesh.append(&cap_mesh.transformed(&Isometry3::translation(0.0, 0.0, -cap_offset)));
+    mesh.append(&cap_mesh.transformed(&Isometry3::translation(0.0, 0.0, cap_offset)));
+
+    Ok(mesh)
 }
 
 fn generate_sphere_mesh(
@@ -848,6 +898,14 @@ fn visual_to_element(
         urdf_rs::Geometry::Cylinder { radius, length } => VisualElement {
             transform: offset,
             half_extents: vector![*radius as f32, *length as f32 / 2.0, *radius as f32],
+        },
+        urdf_rs::Geometry::Capsule { radius, length } => VisualElement {
+            transform: offset,
+            half_extents: vector![
+                *radius as f32,
+                (*length as f32) / 2.0 + *radius as f32,
+                *radius as f32,
+            ],
         },
         urdf_rs::Geometry::Sphere { radius } => VisualElement {
             transform: offset,
