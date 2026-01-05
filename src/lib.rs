@@ -175,7 +175,7 @@ impl RoboRenderer {
         let map = parse_joint_map(joint_positions)?;
         apply_joint_map(&mut self.chain, &self.joint_names, &map)?;
         let skeleton = collect_points(&self.chain)?;
-        let visuals = collect_visual_rects(&self.chain, &self.visuals)?;
+        let visuals = collect_visual_meshes(&self.chain, &self.visuals)?;
         draw_scene(&skeleton, &visuals, output_path).map_err(PyErr::from)
     }
 
@@ -190,7 +190,7 @@ impl RoboRenderer {
         for (idx, frame) in frames.iter().enumerate() {
             apply_joint_map(&mut self.chain, &self.joint_names, &frame.positions)?;
             let points = collect_points(&self.chain)?;
-            let visuals = collect_visual_rects(&self.chain, &self.visuals)?;
+            let visuals = collect_visual_meshes(&self.chain, &self.visuals)?;
             let out = format!("{}/frame_{:04}.png", output_dir, idx);
             draw_scene(&points, &visuals, &out).map_err(PyErr::from)?;
         }
@@ -205,7 +205,7 @@ impl RoboRenderer {
         for (idx, frame) in frames.iter().enumerate() {
             apply_joint_map(&mut self.chain, &self.joint_names, &frame.positions)?;
             let points = collect_points(&self.chain)?;
-            let visuals = collect_visual_rects(&self.chain, &self.visuals)?;
+            let visuals = collect_visual_meshes(&self.chain, &self.visuals)?;
             let out = format!("{}/frame_{:04}.png", output_dir, idx);
             draw_scene(&points, &visuals, &out).map_err(PyErr::from)?;
         }
@@ -380,10 +380,10 @@ fn collect_points(
 
 fn draw_scene(
     points: &[(Point3<f32>, Option<Point3<f32>>)],
-    visuals: &[VisualRect],
+    meshes: &[MeshData],
     output: &str,
 ) -> Result<(), RoboMeshError> {
-    let (min, max) = bounding_square(points, visuals);
+    let (min, max) = bounding_square(points, meshes);
     let (width, height) = (800u32, 800u32);
     let center = Point2::new((max.x + min.x) / 2.0, (max.y + min.y) / 2.0);
     let world_half_range = ((max.x - min.x).abs().max((max.y - min.y).abs()) / 2.0).max(1.0);
@@ -392,15 +392,8 @@ fn draw_scene(
     let mut canvas: ImageBuffer<Rgba<u8>, Vec<u8>> =
         ImageBuffer::from_pixel(width, height, Rgba([255, 255, 255, 255]));
 
-    let mut draw_rect = |rect: &VisualRect| -> Result<(), RoboMeshError> {
-        let p_min = world_to_pixel(rect.min, center, scale, (width, height));
-        let p_max = world_to_pixel(rect.max, center, scale, (width, height));
-        fill_rect(&mut canvas, p_min, p_max, Rgba([0, 255, 0, 102]));
-        Ok(())
-    };
-
-    for rect in visuals {
-        draw_rect(rect)?;
+    for mesh in meshes {
+        draw_mesh(&mut canvas, mesh, center, scale)?;
     }
 
     for (child, parent) in points {
@@ -452,20 +445,72 @@ fn blend_pixel(canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, x: i32, y: i32, colo
     dest[3] = 255;
 }
 
-fn fill_rect(
+fn draw_mesh(
     canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
-    p_min: (i32, i32),
-    p_max: (i32, i32),
+    mesh: &MeshData,
+    center: Point2<f32>,
+    scale: f32,
+) -> Result<(), RoboMeshError> {
+    for tri in &mesh.indices {
+        let a = mesh
+            .vertices
+            .get(tri[0] as usize)
+            .ok_or_else(|| RoboMeshError::Render("triangle index out of bounds".into()))?;
+        let b = mesh
+            .vertices
+            .get(tri[1] as usize)
+            .ok_or_else(|| RoboMeshError::Render("triangle index out of bounds".into()))?;
+        let c = mesh
+            .vertices
+            .get(tri[2] as usize)
+            .ok_or_else(|| RoboMeshError::Render("triangle index out of bounds".into()))?;
+
+        let pa = world_to_pixel(Point2::new(a[0], a[2]), center, scale, canvas.dimensions());
+        let pb = world_to_pixel(Point2::new(b[0], b[2]), center, scale, canvas.dimensions());
+        let pc = world_to_pixel(Point2::new(c[0], c[2]), center, scale, canvas.dimensions());
+
+        fill_triangle(canvas, pa, pb, pc, Rgba([0, 255, 0, 102]));
+    }
+
+    Ok(())
+}
+
+fn edge_function(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> i64 {
+    let (ax, ay) = (a.0 as i64, a.1 as i64);
+    let (bx, by) = (b.0 as i64, b.1 as i64);
+    let (cx, cy) = (c.0 as i64, c.1 as i64);
+    (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
+}
+
+fn fill_triangle(
+    canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    p0: (i32, i32),
+    p1: (i32, i32),
+    p2: (i32, i32),
     color: Rgba<u8>,
 ) {
-    let x_start = p_min.0.min(p_max.0).max(0) as u32;
-    let x_end = p_min.0.max(p_max.0).min(canvas.width() as i32 - 1) as u32;
-    let y_start = p_min.1.min(p_max.1).max(0) as u32;
-    let y_end = p_min.1.max(p_max.1).min(canvas.height() as i32 - 1) as u32;
+    let min_x = p0.0.min(p1.0).min(p2.0).max(0);
+    let max_x = p0.0.max(p1.0).max(p2.0).min(canvas.width() as i32 - 1);
+    let min_y = p0.1.min(p1.1).min(p2.1).max(0);
+    let max_y = p0.1.max(p1.1).max(p2.1).min(canvas.height() as i32 - 1);
 
-    for y in y_start..=y_end {
-        for x in x_start..=x_end {
-            blend_pixel(canvas, x as i32, y as i32, color);
+    let area = edge_function(p0, p1, p2);
+    if area == 0 {
+        return;
+    }
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let p = (x, y);
+            let w0 = edge_function(p1, p2, p);
+            let w1 = edge_function(p2, p0, p);
+            let w2 = edge_function(p0, p1, p);
+
+            if (w0 >= 0 && w1 >= 0 && w2 >= 0 && area > 0)
+                || (w0 <= 0 && w1 <= 0 && w2 <= 0 && area < 0)
+            {
+                blend_pixel(canvas, x, y, color);
+            }
         }
     }
 }
@@ -528,7 +573,7 @@ fn draw_circle(
 
 fn bounding_square(
     points: &[(Point3<f32>, Option<Point3<f32>>)],
-    visuals: &[VisualRect],
+    meshes: &[MeshData],
 ) -> (Point2<f32>, Point2<f32>) {
     let mut min_x = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
@@ -544,11 +589,13 @@ fn bounding_square(
         }
     }
 
-    for rect in visuals {
-        min_x = min_x.min(rect.min.x);
-        max_x = max_x.max(rect.max.x);
-        min_z = min_z.min(rect.min.y);
-        max_z = max_z.max(rect.max.y);
+    for mesh in meshes {
+        for v in &mesh.vertices {
+            min_x = min_x.min(v[0]);
+            max_x = max_x.max(v[0]);
+            min_z = min_z.min(v[2]);
+            max_z = max_z.max(v[2]);
+        }
     }
 
     if !min_x.is_finite() || !min_z.is_finite() {
@@ -572,24 +619,30 @@ fn bounding_square(
 #[derive(Clone, Debug)]
 struct VisualElement {
     transform: Isometry3<f32>,
-    half_extents: Vector3<f32>,
+    geometry: VisualGeometry,
 }
 
 #[derive(Clone, Debug)]
-struct VisualRect {
-    min: Point2<f32>,
-    max: Point2<f32>,
+enum VisualGeometry {
+    Mesh(MeshData),
 }
 
 /// Generate a triangle mesh for a URDF visual element. Primitive types are
-/// tessellated procedurally; existing mesh references are not re-sampled.
+/// tessellated procedurally; external mesh references are loaded directly.
 /// The mesh is returned in world space if the visual contains an origin pose.
 pub fn mesh_from_visual(
     visual: &urdf_rs::Visual,
     tessellation: Option<&MeshTessellation>,
 ) -> Result<MeshData, RoboMeshError> {
     let tess = tessellation.cloned().unwrap_or_default();
-    let mesh = mesh_from_geometry(&visual.geometry, &tess)?;
+    let mesh = match &visual.geometry {
+        urdf_rs::Geometry::Mesh { filename, scale } => {
+            let path = PathBuf::from(filename);
+            let (mesh, center) = load_mesh_data(&path, scale)?;
+            mesh.transformed(&Translation3::from(center))
+        }
+        other => mesh_from_geometry(other, &tess)?,
+    };
     let world = pose_to_isometry(&visual.origin);
     Ok(mesh.transformed(&world))
 }
@@ -731,7 +784,7 @@ fn generate_capsule_mesh(
 
     let mut mesh = generate_cylinder_mesh(radius, cyl_length, tessellation)?;
     let cap_mesh = generate_sphere_mesh(radius, tessellation)?;
-    let cap_offset = cyl_length / 2.0 + radius;
+    let cap_offset = cyl_length / 2.0;
     mesh.append(&cap_mesh.transformed(&Isometry3::translation(0.0, 0.0, -cap_offset)));
     mesh.append(&cap_mesh.transformed(&Isometry3::translation(0.0, 0.0, cap_offset)));
 
@@ -806,11 +859,11 @@ fn generate_spheroid_mesh(
     Ok(MeshData { vertices, indices })
 }
 
-fn collect_visual_rects(
+fn collect_visual_meshes(
     chain: &Chain<f32>,
     visuals: &HashMap<String, Vec<VisualElement>>,
-) -> Result<Vec<VisualRect>, RoboMeshError> {
-    let mut rects = Vec::new();
+) -> Result<Vec<MeshData>, RoboMeshError> {
+    let mut meshes = Vec::new();
     for link in chain.iter() {
         let world = link
             .world_transform()
@@ -819,42 +872,13 @@ fn collect_visual_rects(
         if let Some(link_visuals) = visuals.get(&joint.name) {
             for vis in link_visuals {
                 let world_vis = world * vis.transform;
-                rects.push(rect_from_box(&world_vis, vis.half_extents));
+                if let VisualGeometry::Mesh(mesh) = &vis.geometry {
+                    meshes.push(mesh.transformed(&world_vis));
+                }
             }
         }
     }
-    Ok(rects)
-}
-
-fn rect_from_box(transform: &Isometry3<f32>, half: Vector3<f32>) -> VisualRect {
-    let corners = [
-        vector![half.x, half.y, half.z],
-        vector![half.x, half.y, -half.z],
-        vector![half.x, -half.y, half.z],
-        vector![half.x, -half.y, -half.z],
-        vector![-half.x, half.y, half.z],
-        vector![-half.x, half.y, -half.z],
-        vector![-half.x, -half.y, half.z],
-        vector![-half.x, -half.y, -half.z],
-    ];
-
-    let mut min_x = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut min_z = f32::INFINITY;
-    let mut max_z = f32::NEG_INFINITY;
-
-    for corner in corners {
-        let world = transform.transform_point(&point![corner.x, corner.y, corner.z]);
-        min_x = min_x.min(world.x);
-        max_x = max_x.max(world.x);
-        min_z = min_z.min(world.z);
-        max_z = max_z.max(world.z);
-    }
-
-    VisualRect {
-        min: Point2::new(min_x, min_z),
-        max: Point2::new(max_x, max_z),
-    }
+    Ok(meshes)
 }
 
 fn load_visuals(
@@ -886,43 +910,34 @@ fn visual_to_element(
     let pose = &visual.origin;
     let offset = pose_to_isometry(pose);
 
+    let tessellation = MeshTessellation::default();
+
     let geometry = match &visual.geometry {
-        urdf_rs::Geometry::Box { size } => VisualElement {
-            transform: offset,
-            half_extents: Vector3::new(
-                size[0] as f32 / 2.0,
-                size[1] as f32 / 2.0,
-                size[2] as f32 / 2.0,
-            ),
-        },
-        urdf_rs::Geometry::Cylinder { radius, length } => VisualElement {
-            transform: offset,
-            half_extents: Vector3::new(*radius as f32, *length as f32 / 2.0, *radius as f32),
-        },
-        urdf_rs::Geometry::Capsule { radius, length } => VisualElement {
-            transform: offset,
-            half_extents: Vector3::new(
-                *radius as f32,
-                (*length as f32) / 2.0 + *radius as f32,
-                *radius as f32,
-            ),
-        },
-        urdf_rs::Geometry::Sphere { radius } => VisualElement {
-            transform: offset,
-            half_extents: Vector3::new(*radius as f32, *radius as f32, *radius as f32),
-        },
+        urdf_rs::Geometry::Box { size } => VisualGeometry::Mesh(generate_box_mesh(size)),
+        urdf_rs::Geometry::Cylinder { radius, length } => VisualGeometry::Mesh(
+            generate_cylinder_mesh(*radius as f32, *length as f32, &tessellation)?,
+        ),
+        urdf_rs::Geometry::Capsule { radius, length } => VisualGeometry::Mesh(
+            generate_capsule_mesh(*radius as f32, *length as f32, &tessellation)?,
+        ),
+        urdf_rs::Geometry::Sphere { radius } => {
+            VisualGeometry::Mesh(generate_sphere_mesh(*radius as f32, &tessellation)?)
+        }
         urdf_rs::Geometry::Mesh { filename, scale } => {
             let path = resolve_mesh_path(filename, base_dir);
-            let (half_extents, center) = mesh_bounds(&path, scale)?;
+            let (mesh, center) = load_mesh_data(&path, scale)?;
             let transform = offset * Translation3::from(center);
-            VisualElement {
+            return Ok(Some(VisualElement {
                 transform,
-                half_extents,
-            }
+                geometry: VisualGeometry::Mesh(mesh),
+            }));
         }
     };
 
-    Ok(Some(geometry))
+    Ok(Some(VisualElement {
+        transform: offset,
+        geometry,
+    }))
 }
 
 fn pose_to_isometry(pose: &urdf_rs::Pose) -> Isometry3<f32> {
@@ -946,50 +961,69 @@ fn resolve_mesh_path(filename: &str, base_dir: Option<&PathBuf>) -> PathBuf {
     }
 }
 
-fn mesh_bounds(
+fn load_mesh_data(
     path: &PathBuf,
     scale: &Option<[f64; 3]>,
-) -> Result<(Vector3<f32>, Vector3<f32>), RoboMeshError> {
+) -> Result<(MeshData, Vector3<f32>), RoboMeshError> {
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    let (min, max) = if ext == "stl" {
-        bounds_from_stl(path)?
-    } else {
-        bounds_from_obj(path)?
-    };
-
     let s = scale.unwrap_or([1.0, 1.0, 1.0]);
-    let scale_vec = vector![s[0] as f32, s[1] as f32, s[2] as f32];
-    let min_scaled = min.component_mul(&scale_vec);
-    let max_scaled = max.component_mul(&scale_vec);
-    let center = (min_scaled + max_scaled) / 2.0;
-    let half = (max_scaled - min_scaled).map(|v| v.abs() / 2.0);
-    Ok((half, center))
+    let scale_vec = Vector3::new(s[0] as f32, s[1] as f32, s[2] as f32);
+
+    if ext == "stl" {
+        load_stl_mesh(path, &scale_vec)
+    } else {
+        load_obj_mesh(path, &scale_vec)
+    }
 }
 
-fn bounds_from_obj(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboMeshError> {
-    let (models, _) = tobj::load_obj(path, &tobj::LoadOptions::default())
-        .map_err(|e| RoboMeshError::Mesh(format!("Failed to load OBJ {}: {e}", path.display())))?;
+fn load_obj_mesh(
+    path: &PathBuf,
+    scale: &Vector3<f32>,
+) -> Result<(MeshData, Vector3<f32>), RoboMeshError> {
+    let (models, _) = tobj::load_obj(
+        path,
+        &tobj::LoadOptions {
+            triangulate: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| RoboMeshError::Mesh(format!("Failed to load OBJ {}: {e}", path.display())))?;
 
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
     let mut min = vector![f32::INFINITY, f32::INFINITY, f32::INFINITY];
     let mut max = vector![f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+    let mut offset = 0u32;
 
     for m in models {
         let mesh = m.mesh;
         for chunk in mesh.positions.chunks(3) {
             if let [x, y, z] = chunk {
-                min.x = min.x.min(*x);
-                min.y = min.y.min(*y);
-                min.z = min.z.min(*z);
-                max.x = max.x.max(*x);
-                max.y = max.y.max(*y);
-                max.z = max.z.max(*z);
+                let px = *x as f32 * scale.x;
+                let py = *y as f32 * scale.y;
+                let pz = *z as f32 * scale.z;
+                min.x = min.x.min(px);
+                min.y = min.y.min(py);
+                min.z = min.z.min(pz);
+                max.x = max.x.max(px);
+                max.y = max.y.max(py);
+                max.z = max.z.max(pz);
+                vertices.push([px, py, pz]);
             }
         }
+
+        for tri in mesh.indices.chunks(3) {
+            if let [a, b, c] = tri {
+                indices.push([offset + *a, offset + *b, offset + *c]);
+            }
+        }
+
+        offset = vertices.len() as u32;
     }
 
     if !min.x.is_finite() {
@@ -999,25 +1033,49 @@ fn bounds_from_obj(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboM
         )));
     }
 
-    Ok((min, max))
+    let center = (min + max) / 2.0;
+    for v in vertices.iter_mut() {
+        v[0] -= center.x;
+        v[1] -= center.y;
+        v[2] -= center.z;
+    }
+
+    Ok((MeshData { vertices, indices }, center))
 }
 
-fn bounds_from_stl(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboMeshError> {
+fn load_stl_mesh(
+    path: &PathBuf,
+    scale: &Vector3<f32>,
+) -> Result<(MeshData, Vector3<f32>), RoboMeshError> {
     let mut file = File::open(path)
         .map_err(|e| RoboMeshError::Mesh(format!("Failed to load STL {}: {e}", path.display())))?;
     let stl = stl_io::read_stl(&mut file)
         .map_err(|e| RoboMeshError::Mesh(format!("Failed to load STL {}: {e}", path.display())))?;
 
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
     let mut min = vector![f32::INFINITY, f32::INFINITY, f32::INFINITY];
     let mut max = vector![f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
 
-    for v in stl.vertices {
-        min.x = min.x.min(v[0]);
-        min.y = min.y.min(v[1]);
-        min.z = min.z.min(v[2]);
-        max.x = max.x.max(v[0]);
-        max.y = max.y.max(v[1]);
-        max.z = max.z.max(v[2]);
+    for v in &stl.vertices {
+        let px = v[0] * scale.x;
+        let py = v[1] * scale.y;
+        let pz = v[2] * scale.z;
+        min.x = min.x.min(px);
+        min.y = min.y.min(py);
+        min.z = min.z.min(pz);
+        max.x = max.x.max(px);
+        max.y = max.y.max(py);
+        max.z = max.z.max(pz);
+        vertices.push([px, py, pz]);
+    }
+
+    for face in stl.faces {
+        indices.push([
+            face.vertices[0] as u32,
+            face.vertices[1] as u32,
+            face.vertices[2] as u32,
+        ]);
     }
 
     if !min.x.is_finite() {
@@ -1027,7 +1085,14 @@ fn bounds_from_stl(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboM
         )));
     }
 
-    Ok((min, max))
+    let center = (min + max) / 2.0;
+    for v in vertices.iter_mut() {
+        v[0] -= center.x;
+        v[1] -= center.y;
+        v[2] -= center.z;
+    }
+
+    Ok((MeshData { vertices, indices }, center))
 }
 
 #[cfg(test)]
@@ -1041,16 +1106,35 @@ mod tests {
             origin: urdf_rs::Pose::default(),
             geometry: urdf_rs::Geometry::Capsule {
                 radius: 0.5,
-                length: 1.0,
+                length: 2.0,
             },
             material: None,
         };
 
         let element = visual_to_element(&visual, None).unwrap().unwrap();
-        assert_eq!(
-            element.half_extents,
-            vector![0.5, 1.0, 0.5],
-            "Capsule half extents should include both spherical caps",
+        let VisualGeometry::Mesh(mesh) = element.geometry else {
+            panic!("Capsule visuals should be converted into meshes");
+        };
+
+        let mut min = vector![f32::INFINITY, f32::INFINITY, f32::INFINITY];
+        let mut max = vector![f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+        for v in mesh.vertices {
+            min.x = min.x.min(v[0]);
+            min.y = min.y.min(v[1]);
+            min.z = min.z.min(v[2]);
+            max.x = max.x.max(v[0]);
+            max.y = max.y.max(v[1]);
+            max.z = max.z.max(v[2]);
+        }
+
+        let half_x = (max.x - min.x) / 2.0;
+        let half_y = (max.y - min.y) / 2.0;
+        let half_z = (max.z - min.z) / 2.0;
+        assert!((half_x - 0.5).abs() < 1e-3, "Capsule radius should bound X");
+        assert!((half_y - 0.5).abs() < 1e-3, "Capsule radius should bound Y");
+        assert!(
+            (half_z - 1.0).abs() < 1e-3,
+            "Capsule length should include both caps"
         );
         let translation = element.transform.translation.vector;
         assert_eq!(translation, vector![0.0, 0.0, 0.0]);
