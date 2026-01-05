@@ -10,6 +10,9 @@ use kiss3d::{
 };
 use robomesh::{load_csv_trajectory, JointFrame, RoboRenderer};
 
+// `render_with_camera` is async in recent kiss3d versions, so block on it for desktop usage.
+use pollster::block_on;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -51,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let font = Font::default();
 
-    while window.render_with_camera(&mut camera) {
+    while block_on(window.render_with_camera(&mut camera)) {
         for event in window.events().iter() {
             if let WindowEvent::Key(key, action, _) = event.value {
                 if action == Action::Press {
