@@ -35,6 +35,7 @@ renderer.render_trajectory_csv(sample_csv.as_posix(), "frames")
 # Render a single-frame mesh visual that references examples/mesh_link.obj
 mesh_renderer = RoboRenderer(mesh_urdf.as_posix())
 mesh_renderer.render_frame({}, "mesh.png")
+print("Mesh output saved to mesh.png (red cube tilted above the base)")
 PY
 
 # Or run the ready-made example script alongside the bundled URDF/CSV

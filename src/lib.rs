@@ -887,12 +887,14 @@ fn collect_visual_meshes(
         let world = link
             .world_transform()
             .ok_or_else(|| RoboMeshError::Render("missing transform".into()))?;
-        let joint = link.joint();
-        if let Some(link_visuals) = visuals.get(&joint.name) {
-            for vis in link_visuals {
-                let world_vis = world * vis.transform;
-                let VisualGeometry::Mesh(mesh) = &vis.geometry;
-                meshes.push(mesh.transformed(&world_vis));
+
+        if let Some(link_info) = link.link().as_ref() {
+            if let Some(link_visuals) = visuals.get(&link_info.name) {
+                for vis in link_visuals {
+                    let world_vis = world * vis.transform;
+                    let VisualGeometry::Mesh(mesh) = &vis.geometry;
+                    meshes.push(mesh.transformed(&world_vis));
+                }
             }
         }
     }

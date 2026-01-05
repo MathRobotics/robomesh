@@ -26,10 +26,10 @@ def main() -> None:
     renderer.render_trajectory_csv(sample_csv.as_posix(), output_dir.as_posix())
     print(f"Rendered outputs in {output_dir}")
 
-    # Mesh-based visual rendering (no joints to move here)
+    # Mesh-based visual rendering (uses the OBJ in examples/mesh_link.obj)
     mesh_renderer = RoboRenderer(mesh_urdf.as_posix())
     mesh_renderer.render_frame({}, (output_dir / "mesh_frame.png").as_posix())
-    print("Rendered mesh-based link in mesh_frame.png")
+    print("Rendered mesh-based link in mesh_frame.png (tilted red cube)")
 
 
 if __name__ == "__main__":
