@@ -100,7 +100,7 @@ let ellipsoid = generate_ellipsoid_mesh([0.1, 0.05, 0.2], &tess)?;
 ellipsoid.write_obj("ellipsoid.obj")?;
 ```
 
-`mesh_from_visual` performs the same tessellation, loads external mesh files, and applies the visual's origin pose so that the returned vertices are in world coordinates.
+`mesh_from_visual` performs the same tessellation, loads external mesh files (resolving relative paths against an optional URDF base directory), and applies the visual's origin pose so that the returned vertices are in world coordinates. If you simply want to rasterize an entire URDF without setting up `RoboRenderer`, call `render_urdf_meshes("model.urdf", "render.png")` to load, tessellate, and draw the default pose in one step.
 
 ## License
 See [LICENSE](LICENSE).

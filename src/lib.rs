@@ -1,6 +1,11 @@
 #![cfg_attr(not(feature = "python"), allow(dead_code))]
 
-use std::{collections::HashMap, fs::File, io::Write, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 #[cfg(feature = "python")]
 use std::{env, fs, process, time::SystemTime};
@@ -631,11 +636,12 @@ enum VisualGeometry {
 pub fn mesh_from_visual(
     visual: &urdf_rs::Visual,
     tessellation: Option<&MeshTessellation>,
+    base_dir: Option<&Path>,
 ) -> Result<MeshData, RoboMeshError> {
     let tess = tessellation.cloned().unwrap_or_default();
     let mesh = match &visual.geometry {
         urdf_rs::Geometry::Mesh { filename, scale } => {
-            let path = PathBuf::from(filename);
+            let path = resolve_mesh_path(filename, base_dir);
             let (mesh, center) = load_mesh_data(&path, scale)?;
             mesh.transformed(&Isometry3::translation(center.x, center.y, center.z))
         }
@@ -643,6 +649,21 @@ pub fn mesh_from_visual(
     };
     let world = pose_to_isometry(&visual.origin);
     Ok(mesh.transformed(&world))
+}
+
+/// Load an entire URDF from disk, tessellate its visual geometry into triangle
+/// meshes, and render the default pose to a PNG file. Relative mesh references
+/// are resolved against the URDF file's parent directory.
+pub fn render_urdf_meshes(urdf_path: &str, output_path: &str) -> Result<(), RoboMeshError> {
+    let robot =
+        urdf_rs::read_file(urdf_path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
+    let chain =
+        Chain::from_urdf_file(urdf_path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
+    chain.update_transforms();
+    let visuals = load_visuals(&robot, Some(urdf_path))?;
+    let points = collect_points(&chain)?;
+    let meshes = collect_visual_meshes(&chain, &visuals)?;
+    draw_scene(&points, &meshes, output_path)
 }
 
 /// Generate a triangle mesh from a URDF geometry primitive.
@@ -888,7 +909,7 @@ fn load_visuals(
     for link in &robot.links {
         let mut list = Vec::new();
         for visual in &link.visual {
-            if let Some(vis) = visual_to_element(visual, base_dir.as_ref())? {
+            if let Some(vis) = visual_to_element(visual, base_dir.as_deref())? {
                 list.push(vis);
             }
         }
@@ -902,7 +923,7 @@ fn load_visuals(
 
 fn visual_to_element(
     visual: &urdf_rs::Visual,
-    base_dir: Option<&PathBuf>,
+    base_dir: Option<&Path>,
 ) -> Result<Option<VisualElement>, RoboMeshError> {
     let pose = &visual.origin;
     let offset = pose_to_isometry(pose);
@@ -947,7 +968,7 @@ fn pose_to_isometry(pose: &urdf_rs::Pose) -> Isometry3<f32> {
     Isometry3::from_parts(trans, rot)
 }
 
-fn resolve_mesh_path(filename: &str, base_dir: Option<&PathBuf>) -> PathBuf {
+fn resolve_mesh_path(filename: &str, base_dir: Option<&Path>) -> PathBuf {
     let path = PathBuf::from(filename);
     if path.is_absolute() {
         path
