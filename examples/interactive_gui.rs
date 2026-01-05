@@ -39,8 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let eye = Point3::new(1.5, 1.5, 2.0);
     let at = Point3::origin();
-    let camera = ArcBall::new(eye, at);
-    window.set_camera(Box::new(camera));
+    let mut camera = ArcBall::new(eye, at);
 
     let mut selected_joint = 0usize;
     let mut playing = false;
@@ -52,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let font = Font::default();
 
-    while window.render() {
+    while window.render_with_camera(&mut camera) {
         for event in window.events().iter() {
             if let WindowEvent::Key(key, action, _) = event.value {
                 if action == Action::Press {
