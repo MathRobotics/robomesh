@@ -7,9 +7,7 @@ use std::{env, fs, process, time::SystemTime};
 
 use csv::StringRecord;
 use image::{ImageBuffer, Rgba};
-use k::nalgebra::{
-    point, vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3,
-};
+use k::nalgebra::{vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3};
 use k::Chain;
 use serde::Deserialize;
 use thiserror::Error;
@@ -639,7 +637,7 @@ pub fn mesh_from_visual(
         urdf_rs::Geometry::Mesh { filename, scale } => {
             let path = PathBuf::from(filename);
             let (mesh, center) = load_mesh_data(&path, scale)?;
-            mesh.transformed(&Translation3::from(center))
+            mesh.transformed(&Isometry3::translation(center.x, center.y, center.z))
         }
         other => mesh_from_geometry(other, &tess)?,
     };
@@ -872,9 +870,8 @@ fn collect_visual_meshes(
         if let Some(link_visuals) = visuals.get(&joint.name) {
             for vis in link_visuals {
                 let world_vis = world * vis.transform;
-                if let VisualGeometry::Mesh(mesh) = &vis.geometry {
-                    meshes.push(mesh.transformed(&world_vis));
-                }
+                let VisualGeometry::Mesh(mesh) = &vis.geometry;
+                meshes.push(mesh.transformed(&world_vis));
             }
         }
     }
@@ -926,7 +923,7 @@ fn visual_to_element(
         urdf_rs::Geometry::Mesh { filename, scale } => {
             let path = resolve_mesh_path(filename, base_dir);
             let (mesh, center) = load_mesh_data(&path, scale)?;
-            let transform = offset * Translation3::from(center);
+            let transform = offset * Isometry3::translation(center.x, center.y, center.z);
             return Ok(Some(VisualElement {
                 transform,
                 geometry: VisualGeometry::Mesh(mesh),
