@@ -1,15 +1,18 @@
 #![cfg_attr(not(feature = "python"), allow(dead_code))]
 
-use std::{collections::HashMap, fs::File, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 #[cfg(feature = "python")]
 use std::{env, fs, process, time::SystemTime};
 
 use csv::StringRecord;
 use image::{ImageBuffer, Rgba};
-use k::nalgebra::{
-    point, vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3,
-};
+use k::nalgebra::{vector, Isometry3, Point2, Point3, Translation3, UnitQuaternion, Vector3};
 use k::Chain;
 use serde::Deserialize;
 use thiserror::Error;
@@ -48,6 +51,82 @@ pub struct JointFrame {
     pub positions: HashMap<String, f32>,
     #[serde(default)]
     pub time: Option<f32>,
+}
+
+/// A triangle mesh with indexed faces. Vertices are specified in URDF space
+/// (right-handed, X forward, Y left, Z up).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshData {
+    pub vertices: Vec<[f32; 3]>,
+    pub indices: Vec<[u32; 3]>,
+}
+
+impl MeshData {
+    /// Apply an isometric transform to every vertex and return a new mesh.
+    pub fn transformed(&self, iso: &Isometry3<f32>) -> Self {
+        let vertices = self
+            .vertices
+            .iter()
+            .map(|v| {
+                let p = Point3::new(v[0], v[1], v[2]);
+                let t = iso.transform_point(&p);
+                [t.x, t.y, t.z]
+            })
+            .collect();
+        Self {
+            vertices,
+            indices: self.indices.clone(),
+        }
+    }
+
+    /// Write the mesh as a minimal OBJ file containing only vertices and
+    /// triangular faces. Faces are 1-indexed per the OBJ specification.
+    pub fn write_obj(&self, path: &str) -> Result<(), RoboMeshError> {
+        let mut file = File::create(path)
+            .map_err(|e| RoboMeshError::Io(std::io::Error::new(e.kind(), e.to_string())))?;
+        for v in &self.vertices {
+            writeln!(file, "v {} {} {}", v[0], v[1], v[2])
+                .map_err(|e| RoboMeshError::Io(std::io::Error::new(e.kind(), e.to_string())))?;
+        }
+        for tri in &self.indices {
+            writeln!(file, "f {} {} {}", tri[0] + 1, tri[1] + 1, tri[2] + 1)
+                .map_err(|e| RoboMeshError::Io(std::io::Error::new(e.kind(), e.to_string())))?;
+        }
+        Ok(())
+    }
+
+    /// Append another mesh, offsetting the face indices to remain valid.
+    fn append(&mut self, other: &MeshData) {
+        let offset = self.vertices.len() as u32;
+        self.vertices.extend(other.vertices.iter().copied());
+        self.indices.extend(
+            other
+                .indices
+                .iter()
+                .map(|[a, b, c]| [a + offset, b + offset, c + offset]),
+        );
+    }
+}
+
+/// Tessellation settings for primitive mesh generation. Higher segment counts
+/// yield smoother geometry at the cost of more triangles.
+#[derive(Clone, Debug)]
+pub struct MeshTessellation {
+    pub sphere_lat_segments: u32,
+    pub sphere_lon_segments: u32,
+    pub cylinder_radial_segments: u32,
+    pub cylinder_height_segments: u32,
+}
+
+impl Default for MeshTessellation {
+    fn default() -> Self {
+        Self {
+            sphere_lat_segments: 12,
+            sphere_lon_segments: 24,
+            cylinder_radial_segments: 32,
+            cylinder_height_segments: 1,
+        }
+    }
 }
 
 #[cfg_attr(feature = "python", pyclass)]
@@ -99,7 +178,7 @@ impl RoboRenderer {
         let map = parse_joint_map(joint_positions)?;
         apply_joint_map(&mut self.chain, &self.joint_names, &map)?;
         let skeleton = collect_points(&self.chain)?;
-        let visuals = collect_visual_rects(&self.chain, &self.visuals)?;
+        let visuals = collect_visual_meshes(&self.chain, &self.visuals)?;
         draw_scene(&skeleton, &visuals, output_path).map_err(PyErr::from)
     }
 
@@ -114,7 +193,7 @@ impl RoboRenderer {
         for (idx, frame) in frames.iter().enumerate() {
             apply_joint_map(&mut self.chain, &self.joint_names, &frame.positions)?;
             let points = collect_points(&self.chain)?;
-            let visuals = collect_visual_rects(&self.chain, &self.visuals)?;
+            let visuals = collect_visual_meshes(&self.chain, &self.visuals)?;
             let out = format!("{}/frame_{:04}.png", output_dir, idx);
             draw_scene(&points, &visuals, &out).map_err(PyErr::from)?;
         }
@@ -129,7 +208,7 @@ impl RoboRenderer {
         for (idx, frame) in frames.iter().enumerate() {
             apply_joint_map(&mut self.chain, &self.joint_names, &frame.positions)?;
             let points = collect_points(&self.chain)?;
-            let visuals = collect_visual_rects(&self.chain, &self.visuals)?;
+            let visuals = collect_visual_meshes(&self.chain, &self.visuals)?;
             let out = format!("{}/frame_{:04}.png", output_dir, idx);
             draw_scene(&points, &visuals, &out).map_err(PyErr::from)?;
         }
@@ -304,10 +383,10 @@ fn collect_points(
 
 fn draw_scene(
     points: &[(Point3<f32>, Option<Point3<f32>>)],
-    visuals: &[VisualRect],
+    meshes: &[MeshData],
     output: &str,
 ) -> Result<(), RoboMeshError> {
-    let (min, max) = bounding_square(points, visuals);
+    let (min, max) = bounding_square(points, meshes);
     let (width, height) = (800u32, 800u32);
     let center = Point2::new((max.x + min.x) / 2.0, (max.y + min.y) / 2.0);
     let world_half_range = ((max.x - min.x).abs().max((max.y - min.y).abs()) / 2.0).max(1.0);
@@ -316,15 +395,8 @@ fn draw_scene(
     let mut canvas: ImageBuffer<Rgba<u8>, Vec<u8>> =
         ImageBuffer::from_pixel(width, height, Rgba([255, 255, 255, 255]));
 
-    let mut draw_rect = |rect: &VisualRect| -> Result<(), RoboMeshError> {
-        let p_min = world_to_pixel(rect.min, center, scale, (width, height));
-        let p_max = world_to_pixel(rect.max, center, scale, (width, height));
-        fill_rect(&mut canvas, p_min, p_max, Rgba([0, 255, 0, 102]));
-        Ok(())
-    };
-
-    for rect in visuals {
-        draw_rect(rect)?;
+    for mesh in meshes {
+        draw_mesh(&mut canvas, mesh, center, scale)?;
     }
 
     for (child, parent) in points {
@@ -376,20 +448,72 @@ fn blend_pixel(canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, x: i32, y: i32, colo
     dest[3] = 255;
 }
 
-fn fill_rect(
+fn draw_mesh(
     canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
-    p_min: (i32, i32),
-    p_max: (i32, i32),
+    mesh: &MeshData,
+    center: Point2<f32>,
+    scale: f32,
+) -> Result<(), RoboMeshError> {
+    for tri in &mesh.indices {
+        let a = mesh
+            .vertices
+            .get(tri[0] as usize)
+            .ok_or_else(|| RoboMeshError::Render("triangle index out of bounds".into()))?;
+        let b = mesh
+            .vertices
+            .get(tri[1] as usize)
+            .ok_or_else(|| RoboMeshError::Render("triangle index out of bounds".into()))?;
+        let c = mesh
+            .vertices
+            .get(tri[2] as usize)
+            .ok_or_else(|| RoboMeshError::Render("triangle index out of bounds".into()))?;
+
+        let pa = world_to_pixel(Point2::new(a[0], a[2]), center, scale, canvas.dimensions());
+        let pb = world_to_pixel(Point2::new(b[0], b[2]), center, scale, canvas.dimensions());
+        let pc = world_to_pixel(Point2::new(c[0], c[2]), center, scale, canvas.dimensions());
+
+        fill_triangle(canvas, pa, pb, pc, Rgba([0, 255, 0, 102]));
+    }
+
+    Ok(())
+}
+
+fn edge_function(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> i64 {
+    let (ax, ay) = (a.0 as i64, a.1 as i64);
+    let (bx, by) = (b.0 as i64, b.1 as i64);
+    let (cx, cy) = (c.0 as i64, c.1 as i64);
+    (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
+}
+
+fn fill_triangle(
+    canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    p0: (i32, i32),
+    p1: (i32, i32),
+    p2: (i32, i32),
     color: Rgba<u8>,
 ) {
-    let x_start = p_min.0.min(p_max.0).max(0) as u32;
-    let x_end = p_min.0.max(p_max.0).min(canvas.width() as i32 - 1) as u32;
-    let y_start = p_min.1.min(p_max.1).max(0) as u32;
-    let y_end = p_min.1.max(p_max.1).min(canvas.height() as i32 - 1) as u32;
+    let min_x = p0.0.min(p1.0).min(p2.0).max(0);
+    let max_x = p0.0.max(p1.0).max(p2.0).min(canvas.width() as i32 - 1);
+    let min_y = p0.1.min(p1.1).min(p2.1).max(0);
+    let max_y = p0.1.max(p1.1).max(p2.1).min(canvas.height() as i32 - 1);
 
-    for y in y_start..=y_end {
-        for x in x_start..=x_end {
-            blend_pixel(canvas, x as i32, y as i32, color);
+    let area = edge_function(p0, p1, p2);
+    if area == 0 {
+        return;
+    }
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let p = (x, y);
+            let w0 = edge_function(p1, p2, p);
+            let w1 = edge_function(p2, p0, p);
+            let w2 = edge_function(p0, p1, p);
+
+            if (w0 >= 0 && w1 >= 0 && w2 >= 0 && area > 0)
+                || (w0 <= 0 && w1 <= 0 && w2 <= 0 && area < 0)
+            {
+                blend_pixel(canvas, x, y, color);
+            }
         }
     }
 }
@@ -452,7 +576,7 @@ fn draw_circle(
 
 fn bounding_square(
     points: &[(Point3<f32>, Option<Point3<f32>>)],
-    visuals: &[VisualRect],
+    meshes: &[MeshData],
 ) -> (Point2<f32>, Point2<f32>) {
     let mut min_x = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
@@ -468,11 +592,13 @@ fn bounding_square(
         }
     }
 
-    for rect in visuals {
-        min_x = min_x.min(rect.min.x);
-        max_x = max_x.max(rect.max.x);
-        min_z = min_z.min(rect.min.y);
-        max_z = max_z.max(rect.max.y);
+    for mesh in meshes {
+        for v in &mesh.vertices {
+            min_x = min_x.min(v[0]);
+            max_x = max_x.max(v[0]);
+            min_z = min_z.min(v[2]);
+            max_z = max_z.max(v[2]);
+        }
     }
 
     if !min_x.is_finite() || !min_z.is_finite() {
@@ -496,64 +622,283 @@ fn bounding_square(
 #[derive(Clone, Debug)]
 struct VisualElement {
     transform: Isometry3<f32>,
-    half_extents: Vector3<f32>,
+    geometry: VisualGeometry,
 }
 
 #[derive(Clone, Debug)]
-struct VisualRect {
-    min: Point2<f32>,
-    max: Point2<f32>,
+enum VisualGeometry {
+    Mesh(MeshData),
 }
 
-fn collect_visual_rects(
+/// Generate a triangle mesh for a URDF visual element. Primitive types are
+/// tessellated procedurally; external mesh references are loaded directly.
+/// The mesh is returned in world space if the visual contains an origin pose.
+pub fn mesh_from_visual(
+    visual: &urdf_rs::Visual,
+    tessellation: Option<&MeshTessellation>,
+    base_dir: Option<&Path>,
+) -> Result<MeshData, RoboMeshError> {
+    let tess = tessellation.cloned().unwrap_or_default();
+    let mesh = match &visual.geometry {
+        urdf_rs::Geometry::Mesh { filename, scale } => {
+            let path = resolve_mesh_path(filename, base_dir);
+            let (mesh, center) = load_mesh_data(&path, scale)?;
+            mesh.transformed(&Isometry3::translation(center.x, center.y, center.z))
+        }
+        other => mesh_from_geometry(other, &tess)?,
+    };
+    let world = pose_to_isometry(&visual.origin);
+    Ok(mesh.transformed(&world))
+}
+
+/// Load an entire URDF from disk, tessellate its visual geometry into triangle
+/// meshes, and render the default pose to a PNG file. Relative mesh references
+/// are resolved against the URDF file's parent directory.
+pub fn render_urdf_meshes(urdf_path: &str, output_path: &str) -> Result<(), RoboMeshError> {
+    let robot =
+        urdf_rs::read_file(urdf_path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
+    let chain =
+        Chain::from_urdf_file(urdf_path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
+    chain.update_transforms();
+    let visuals = load_visuals(&robot, Some(urdf_path))?;
+    let points = collect_points(&chain)?;
+    let meshes = collect_visual_meshes(&chain, &visuals)?;
+    draw_scene(&points, &meshes, output_path)
+}
+
+/// Generate a triangle mesh from a URDF geometry primitive.
+pub fn mesh_from_geometry(
+    geometry: &urdf_rs::Geometry,
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    match geometry {
+        urdf_rs::Geometry::Box { size } => Ok(generate_box_mesh(size)),
+        urdf_rs::Geometry::Cylinder { radius, length } => {
+            generate_cylinder_mesh(*radius as f32, *length as f32, tessellation)
+        }
+        urdf_rs::Geometry::Capsule { radius, length } => {
+            generate_capsule_mesh(*radius as f32, *length as f32, tessellation)
+        }
+        urdf_rs::Geometry::Sphere { radius } => generate_sphere_mesh(*radius as f32, tessellation),
+        urdf_rs::Geometry::Mesh { .. } => Err(RoboMeshError::Invalid(
+            "Mesh geometry references existing mesh files; nothing to generate".into(),
+        )),
+    }
+}
+
+fn generate_box_mesh(size: &[f64; 3]) -> MeshData {
+    let hx = (size[0] as f32) / 2.0;
+    let hy = (size[1] as f32) / 2.0;
+    let hz = (size[2] as f32) / 2.0;
+
+    let vertices = vec![
+        [hx, hy, hz],
+        [hx, hy, -hz],
+        [hx, -hy, hz],
+        [hx, -hy, -hz],
+        [-hx, hy, hz],
+        [-hx, hy, -hz],
+        [-hx, -hy, hz],
+        [-hx, -hy, -hz],
+    ];
+
+    let indices = vec![
+        [0, 2, 1],
+        [1, 2, 3], // +X
+        [4, 5, 6],
+        [5, 7, 6], // -X
+        [0, 1, 4],
+        [1, 5, 4], // +Y
+        [2, 6, 3],
+        [3, 6, 7], // -Y
+        [0, 4, 2],
+        [2, 4, 6], // +Z
+        [1, 3, 5],
+        [3, 7, 5], // -Z
+    ];
+
+    MeshData { vertices, indices }
+}
+
+fn generate_cylinder_mesh(
+    radius: f32,
+    length: f32,
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    let radial = tessellation.cylinder_radial_segments.max(3);
+    let height_segments = tessellation.cylinder_height_segments.max(1);
+    let half = length / 2.0;
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    // Rings along the Z axis.
+    for h in 0..=height_segments {
+        let z = -half + (length * h as f32) / (height_segments as f32);
+        for i in 0..radial {
+            let theta = 2.0 * std::f32::consts::PI * (i as f32) / (radial as f32);
+            let (s, c) = theta.sin_cos();
+            vertices.push([radius * c, radius * s, z]);
+        }
+    }
+
+    // Side quads
+    for h in 0..height_segments {
+        let ring_start = h * radial;
+        let next_ring = (h + 1) * radial;
+        for i in 0..radial {
+            let next = (i + 1) % radial;
+            let i0 = ring_start + i;
+            let i1 = ring_start + next;
+            let i2 = next_ring + i;
+            let i3 = next_ring + next;
+            indices.push([i0, i1, i3]);
+            indices.push([i0, i3, i2]);
+        }
+    }
+
+    let bottom_center = vertices.len() as u32;
+    vertices.push([0.0, 0.0, -half]);
+    let top_center = vertices.len() as u32;
+    vertices.push([0.0, 0.0, half]);
+
+    // Caps
+    for i in 0..radial {
+        let next = (i + 1) % radial;
+        // Bottom
+        indices.push([bottom_center, (next) as u32, i as u32]);
+        // Top
+        let top_i = (height_segments * radial + i) as u32;
+        let top_next = (height_segments * radial + next) as u32;
+        indices.push([top_center, top_i, top_next]);
+    }
+
+    Ok(MeshData { vertices, indices })
+}
+
+fn generate_capsule_mesh(
+    radius: f32,
+    length: f32,
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    if radius <= 0.0 {
+        return Err(RoboMeshError::Invalid(
+            "Capsule radius must be positive".into(),
+        ));
+    }
+    if length <= 0.0 {
+        return Err(RoboMeshError::Invalid(
+            "Capsule length must be positive".into(),
+        ));
+    }
+
+    let cyl_length = length - 2.0 * radius;
+    if cyl_length < 0.0 {
+        return Err(RoboMeshError::Invalid(
+            "Capsule length must be at least twice the radius".into(),
+        ));
+    }
+    if cyl_length == 0.0 {
+        return generate_sphere_mesh(radius, tessellation);
+    }
+
+    let mut mesh = generate_cylinder_mesh(radius, cyl_length, tessellation)?;
+    let cap_mesh = generate_sphere_mesh(radius, tessellation)?;
+    let cap_offset = cyl_length / 2.0;
+    mesh.append(&cap_mesh.transformed(&Isometry3::translation(0.0, 0.0, -cap_offset)));
+    mesh.append(&cap_mesh.transformed(&Isometry3::translation(0.0, 0.0, cap_offset)));
+
+    Ok(mesh)
+}
+
+fn generate_sphere_mesh(
+    radius: f32,
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    generate_spheroid_mesh([radius, radius, radius], tessellation)
+}
+
+/// Generate a tessellated ellipsoid (a stretched sphere) with independent X/Y/Z
+/// radii.
+pub fn generate_ellipsoid_mesh(
+    radii: [f32; 3],
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    generate_spheroid_mesh(radii, tessellation)
+}
+
+fn generate_spheroid_mesh(
+    radii: [f32; 3],
+    tessellation: &MeshTessellation,
+) -> Result<MeshData, RoboMeshError> {
+    if radii.iter().any(|r| *r <= 0.0) {
+        return Err(RoboMeshError::Invalid(
+            "Ellipsoid radii must be positive".to_string(),
+        ));
+    }
+
+    let lats = tessellation.sphere_lat_segments.max(3);
+    let lons = tessellation.sphere_lon_segments.max(3);
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    let [rx, ry, rz] = radii;
+
+    for lat in 0..=lats {
+        let v = lat as f32 / lats as f32;
+        let theta = std::f32::consts::PI * v;
+        let sin_theta = theta.sin();
+        let cos_theta = theta.cos();
+
+        for lon in 0..=lons {
+            let u = lon as f32 / lons as f32;
+            let phi = 2.0 * std::f32::consts::PI * u;
+            let (s, c) = phi.sin_cos();
+            let x = rx * sin_theta * c;
+            let y = ry * sin_theta * s;
+            let z = rz * cos_theta;
+            vertices.push([x, y, z]);
+        }
+    }
+
+    let ring = lons + 1;
+    for lat in 0..lats {
+        for lon in 0..lons {
+            let current = lat * ring + lon;
+            let next = current + ring;
+
+            if lat != 0 {
+                indices.push([current, next, current + 1]);
+            }
+            if lat != lats - 1 {
+                indices.push([current + 1, next, next + 1]);
+            }
+        }
+    }
+
+    Ok(MeshData { vertices, indices })
+}
+
+fn collect_visual_meshes(
     chain: &Chain<f32>,
     visuals: &HashMap<String, Vec<VisualElement>>,
-) -> Result<Vec<VisualRect>, RoboMeshError> {
-    let mut rects = Vec::new();
+) -> Result<Vec<MeshData>, RoboMeshError> {
+    let mut meshes = Vec::new();
     for link in chain.iter() {
         let world = link
             .world_transform()
             .ok_or_else(|| RoboMeshError::Render("missing transform".into()))?;
-        let joint = link.joint();
-        if let Some(link_visuals) = visuals.get(&joint.name) {
-            for vis in link_visuals {
-                let world_vis = world * vis.transform;
-                rects.push(rect_from_box(&world_vis, vis.half_extents));
+
+        if let Some(link_info) = link.link().as_ref() {
+            if let Some(link_visuals) = visuals.get(&link_info.name) {
+                for vis in link_visuals {
+                    let world_vis = world * vis.transform;
+                    let VisualGeometry::Mesh(mesh) = &vis.geometry;
+                    meshes.push(mesh.transformed(&world_vis));
+                }
             }
         }
     }
-    Ok(rects)
-}
-
-fn rect_from_box(transform: &Isometry3<f32>, half: Vector3<f32>) -> VisualRect {
-    let corners = [
-        vector![half.x, half.y, half.z],
-        vector![half.x, half.y, -half.z],
-        vector![half.x, -half.y, half.z],
-        vector![half.x, -half.y, -half.z],
-        vector![-half.x, half.y, half.z],
-        vector![-half.x, half.y, -half.z],
-        vector![-half.x, -half.y, half.z],
-        vector![-half.x, -half.y, -half.z],
-    ];
-
-    let mut min_x = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut min_z = f32::INFINITY;
-    let mut max_z = f32::NEG_INFINITY;
-
-    for corner in corners {
-        let world = transform.transform_point(&point![corner.x, corner.y, corner.z]);
-        min_x = min_x.min(world.x);
-        max_x = max_x.max(world.x);
-        min_z = min_z.min(world.z);
-        max_z = max_z.max(world.z);
-    }
-
-    VisualRect {
-        min: Point2::new(min_x, min_z),
-        max: Point2::new(max_x, max_z),
-    }
+    Ok(meshes)
 }
 
 fn load_visuals(
@@ -566,7 +911,7 @@ fn load_visuals(
     for link in &robot.links {
         let mut list = Vec::new();
         for visual in &link.visual {
-            if let Some(vis) = visual_to_element(visual, base_dir.as_ref())? {
+            if let Some(vis) = visual_to_element(visual, base_dir.as_deref())? {
                 list.push(vis);
             }
         }
@@ -580,41 +925,39 @@ fn load_visuals(
 
 fn visual_to_element(
     visual: &urdf_rs::Visual,
-    base_dir: Option<&PathBuf>,
+    base_dir: Option<&Path>,
 ) -> Result<Option<VisualElement>, RoboMeshError> {
     let pose = &visual.origin;
     let offset = pose_to_isometry(pose);
 
+    let tessellation = MeshTessellation::default();
+
     let geometry = match &visual.geometry {
-        urdf_rs::Geometry::Box { size } => VisualElement {
-            transform: offset,
-            half_extents: vector![
-                size[0] as f32 / 2.0,
-                size[1] as f32 / 2.0,
-                size[2] as f32 / 2.0
-            ],
-        },
-        urdf_rs::Geometry::Cylinder { radius, length } => VisualElement {
-            transform: offset,
-            half_extents: vector![*radius as f32, *length as f32 / 2.0, *radius as f32],
-        },
-        urdf_rs::Geometry::Sphere { radius } => VisualElement {
-            transform: offset,
-            half_extents: vector![*radius as f32, *radius as f32, *radius as f32],
-        },
+        urdf_rs::Geometry::Box { size } => VisualGeometry::Mesh(generate_box_mesh(size)),
+        urdf_rs::Geometry::Cylinder { radius, length } => VisualGeometry::Mesh(
+            generate_cylinder_mesh(*radius as f32, *length as f32, &tessellation)?,
+        ),
+        urdf_rs::Geometry::Capsule { radius, length } => VisualGeometry::Mesh(
+            generate_capsule_mesh(*radius as f32, *length as f32, &tessellation)?,
+        ),
+        urdf_rs::Geometry::Sphere { radius } => {
+            VisualGeometry::Mesh(generate_sphere_mesh(*radius as f32, &tessellation)?)
+        }
         urdf_rs::Geometry::Mesh { filename, scale } => {
             let path = resolve_mesh_path(filename, base_dir);
-            let (half_extents, center) = mesh_bounds(&path, scale)?;
-            let transform = offset * Translation3::from(center);
-            VisualElement {
+            let (mesh, center) = load_mesh_data(&path, scale)?;
+            let transform = offset * Isometry3::translation(center.x, center.y, center.z);
+            return Ok(Some(VisualElement {
                 transform,
-                half_extents,
-            }
+                geometry: VisualGeometry::Mesh(mesh),
+            }));
         }
-        _ => return Ok(None),
     };
 
-    Ok(Some(geometry))
+    Ok(Some(VisualElement {
+        transform: offset,
+        geometry,
+    }))
 }
 
 fn pose_to_isometry(pose: &urdf_rs::Pose) -> Isometry3<f32> {
@@ -627,7 +970,7 @@ fn pose_to_isometry(pose: &urdf_rs::Pose) -> Isometry3<f32> {
     Isometry3::from_parts(trans, rot)
 }
 
-fn resolve_mesh_path(filename: &str, base_dir: Option<&PathBuf>) -> PathBuf {
+fn resolve_mesh_path(filename: &str, base_dir: Option<&Path>) -> PathBuf {
     let path = PathBuf::from(filename);
     if path.is_absolute() {
         path
@@ -638,50 +981,69 @@ fn resolve_mesh_path(filename: &str, base_dir: Option<&PathBuf>) -> PathBuf {
     }
 }
 
-fn mesh_bounds(
+fn load_mesh_data(
     path: &PathBuf,
     scale: &Option<[f64; 3]>,
-) -> Result<(Vector3<f32>, Vector3<f32>), RoboMeshError> {
+) -> Result<(MeshData, Vector3<f32>), RoboMeshError> {
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    let (min, max) = if ext == "stl" {
-        bounds_from_stl(path)?
-    } else {
-        bounds_from_obj(path)?
-    };
-
     let s = scale.unwrap_or([1.0, 1.0, 1.0]);
-    let scale_vec = vector![s[0] as f32, s[1] as f32, s[2] as f32];
-    let min_scaled = min.component_mul(&scale_vec);
-    let max_scaled = max.component_mul(&scale_vec);
-    let center = (min_scaled + max_scaled) / 2.0;
-    let half = (max_scaled - min_scaled).map(|v| v.abs() / 2.0);
-    Ok((half, center))
+    let scale_vec = Vector3::new(s[0] as f32, s[1] as f32, s[2] as f32);
+
+    if ext == "stl" {
+        load_stl_mesh(path, &scale_vec)
+    } else {
+        load_obj_mesh(path, &scale_vec)
+    }
 }
 
-fn bounds_from_obj(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboMeshError> {
-    let (models, _) = tobj::load_obj(path, &tobj::LoadOptions::default())
-        .map_err(|e| RoboMeshError::Mesh(format!("Failed to load OBJ {}: {e}", path.display())))?;
+fn load_obj_mesh(
+    path: &PathBuf,
+    scale: &Vector3<f32>,
+) -> Result<(MeshData, Vector3<f32>), RoboMeshError> {
+    let (models, _) = tobj::load_obj(
+        path,
+        &tobj::LoadOptions {
+            triangulate: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| RoboMeshError::Mesh(format!("Failed to load OBJ {}: {e}", path.display())))?;
 
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
     let mut min = vector![f32::INFINITY, f32::INFINITY, f32::INFINITY];
     let mut max = vector![f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+    let mut offset = 0u32;
 
     for m in models {
         let mesh = m.mesh;
         for chunk in mesh.positions.chunks(3) {
             if let [x, y, z] = chunk {
-                min.x = min.x.min(*x);
-                min.y = min.y.min(*y);
-                min.z = min.z.min(*z);
-                max.x = max.x.max(*x);
-                max.y = max.y.max(*y);
-                max.z = max.z.max(*z);
+                let px = *x as f32 * scale.x;
+                let py = *y as f32 * scale.y;
+                let pz = *z as f32 * scale.z;
+                min.x = min.x.min(px);
+                min.y = min.y.min(py);
+                min.z = min.z.min(pz);
+                max.x = max.x.max(px);
+                max.y = max.y.max(py);
+                max.z = max.z.max(pz);
+                vertices.push([px, py, pz]);
             }
         }
+
+        for tri in mesh.indices.chunks(3) {
+            if let [a, b, c] = tri {
+                indices.push([offset + *a, offset + *b, offset + *c]);
+            }
+        }
+
+        offset = vertices.len() as u32;
     }
 
     if !min.x.is_finite() {
@@ -691,25 +1053,49 @@ fn bounds_from_obj(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboM
         )));
     }
 
-    Ok((min, max))
+    let center = (min + max) / 2.0;
+    for v in vertices.iter_mut() {
+        v[0] -= center.x;
+        v[1] -= center.y;
+        v[2] -= center.z;
+    }
+
+    Ok((MeshData { vertices, indices }, center))
 }
 
-fn bounds_from_stl(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboMeshError> {
+fn load_stl_mesh(
+    path: &PathBuf,
+    scale: &Vector3<f32>,
+) -> Result<(MeshData, Vector3<f32>), RoboMeshError> {
     let mut file = File::open(path)
         .map_err(|e| RoboMeshError::Mesh(format!("Failed to load STL {}: {e}", path.display())))?;
     let stl = stl_io::read_stl(&mut file)
         .map_err(|e| RoboMeshError::Mesh(format!("Failed to load STL {}: {e}", path.display())))?;
 
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
     let mut min = vector![f32::INFINITY, f32::INFINITY, f32::INFINITY];
     let mut max = vector![f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
 
-    for v in stl.vertices {
-        min.x = min.x.min(v[0]);
-        min.y = min.y.min(v[1]);
-        min.z = min.z.min(v[2]);
-        max.x = max.x.max(v[0]);
-        max.y = max.y.max(v[1]);
-        max.z = max.z.max(v[2]);
+    for v in &stl.vertices {
+        let px = v[0] * scale.x;
+        let py = v[1] * scale.y;
+        let pz = v[2] * scale.z;
+        min.x = min.x.min(px);
+        min.y = min.y.min(py);
+        min.z = min.z.min(pz);
+        max.x = max.x.max(px);
+        max.y = max.y.max(py);
+        max.z = max.z.max(pz);
+        vertices.push([px, py, pz]);
+    }
+
+    for face in stl.faces {
+        indices.push([
+            face.vertices[0] as u32,
+            face.vertices[1] as u32,
+            face.vertices[2] as u32,
+        ]);
     }
 
     if !min.x.is_finite() {
@@ -719,7 +1105,76 @@ fn bounds_from_stl(path: &PathBuf) -> Result<(Vector3<f32>, Vector3<f32>), RoboM
         )));
     }
 
-    Ok((min, max))
+    let center = (min + max) / 2.0;
+    for v in vertices.iter_mut() {
+        v[0] -= center.x;
+        v[1] -= center.y;
+        v[2] -= center.z;
+    }
+
+    Ok((MeshData { vertices, indices }, center))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capsule_half_extents_include_caps() {
+        let visual = urdf_rs::Visual {
+            name: None,
+            origin: urdf_rs::Pose::default(),
+            geometry: urdf_rs::Geometry::Capsule {
+                radius: 0.5,
+                length: 2.0,
+            },
+            material: None,
+        };
+
+        let element = visual_to_element(&visual, None).unwrap().unwrap();
+        let VisualGeometry::Mesh(mesh) = element.geometry else {
+            panic!("Capsule visuals should be converted into meshes");
+        };
+
+        let mut min = vector![f32::INFINITY, f32::INFINITY, f32::INFINITY];
+        let mut max = vector![f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+        for v in mesh.vertices {
+            min.x = min.x.min(v[0]);
+            min.y = min.y.min(v[1]);
+            min.z = min.z.min(v[2]);
+            max.x = max.x.max(v[0]);
+            max.y = max.y.max(v[1]);
+            max.z = max.z.max(v[2]);
+        }
+
+        let half_x = (max.x - min.x) / 2.0;
+        let half_y = (max.y - min.y) / 2.0;
+        let half_z = (max.z - min.z) / 2.0;
+        assert!((half_x - 0.5).abs() < 1e-3, "Capsule radius should bound X");
+        assert!((half_y - 0.5).abs() < 1e-3, "Capsule radius should bound Y");
+        assert!(
+            (half_z - 1.0).abs() < 1e-3,
+            "Capsule length should include both caps"
+        );
+        let translation = element.transform.translation.vector;
+        assert_eq!(translation, vector![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn capsule_requires_valid_dimensions() {
+        let tess = MeshTessellation::default();
+        assert!(generate_capsule_mesh(0.0, 1.0, &tess).is_err());
+        assert!(generate_capsule_mesh(1.0, 1.0, &tess).is_err());
+    }
+
+    #[test]
+    fn capsule_reduces_to_sphere_when_cylinder_collapses() {
+        let tess = MeshTessellation::default();
+        let expected = generate_sphere_mesh(1.0, &tess).unwrap();
+        let actual = generate_capsule_mesh(1.0, 2.0, &tess).unwrap();
+        assert_eq!(expected.vertices, actual.vertices);
+        assert_eq!(expected.indices, actual.indices);
+    }
 }
 
 #[cfg(feature = "python")]
