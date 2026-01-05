@@ -4,7 +4,8 @@ use kiss3d::{
     camera::ArcBall,
     event::{Action, Key, WindowEvent},
     light::Light,
-    nalgebra::{Point3, Translation3},
+    nalgebra::{Point2, Point3},
+    text::Font,
     window::Window,
 };
 use robomesh::{load_csv_trajectory, JointFrame, RoboRenderer};
@@ -38,7 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let eye = Point3::new(1.5, 1.5, 2.0);
     let at = Point3::origin();
-    let mut camera = ArcBall::new(eye, at);
+    let camera = ArcBall::new(eye, at);
+    window.set_camera(Box::new(camera));
 
     let mut selected_joint = 0usize;
     let mut playing = false;
@@ -48,7 +50,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loaded joints: {:?}", joint_names);
     println!("Mouse to orbit, scroll to zoom. Left/Right: change joint, Up/Down: adjust angle, Space: toggle trajectory playback.");
 
-    while window.render_with_camera(&mut camera) {
+    let font = Font::default();
+
+    while window.render() {
         for event in window.events().iter() {
             if let WindowEvent::Key(key, action, _) = event.value {
                 if action == Action::Press {
@@ -92,15 +96,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let highlight_color = Point3::new(0.9, 0.2, 0.2);
         for (idx, (child, parent)) in skeleton.iter().enumerate() {
+            let child_point = Point3::new(child.x, child.y, child.z);
             if let Some(parent) = parent {
-                window.draw_line(parent, child, &Point3::new(0.2, 0.4, 0.9));
+                let parent_point = Point3::new(parent.x, parent.y, parent.z);
+                window.draw_line(&parent_point, &child_point, &Point3::new(0.2, 0.4, 0.9));
             }
             let color = if idx == selected_joint {
                 highlight_color
             } else {
                 Point3::new(0.1, 0.5, 0.1)
             };
-            window.draw_sphere(child, 0.02, &color);
+            window.draw_point(&child_point, &color);
         }
 
         // Small ground hint for spatial context
@@ -123,12 +129,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Active joint: {} (± keys to adjust)",
             joint_names[selected_joint]
         );
-        let translation = Translation3::new(-0.95, -0.9, 0.0);
         window.draw_text(
             &joint_label,
-            &Point3::new(0.0, 0.0, 0.0),
+            &Point2::new(10.0, 40.0),
             30.0,
-            &Translation3::from(translation),
+            &font,
             &Point3::new(0.1, 0.1, 0.1),
         );
     }
