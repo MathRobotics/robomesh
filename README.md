@@ -10,6 +10,7 @@ robomesh is a small Rust library that loads URDF models, applies joint trajector
 - Python-facing `RoboRenderer` class implemented with PyO3
 - Joint targets accepted as Python mappings, JSON strings, or CSV trajectory files
 - Single-frame PNG rendering or multi-frame trajectory export to a directory
+- Optional interactive 3D skeleton viewer example built with `kiss3d`
 
 ## Building (Rust)
 If you want to build the Rust crate only, run:
@@ -63,6 +64,18 @@ renderer.render_trajectory(json_traj, "frames_from_json")
 # Load a CSV trajectory (headers must match joint names; optional "time" column is ignored for rendering)
 renderer.render_trajectory_csv(sample_csv.as_posix(), "frames_from_csv")
 ```
+
+## Interactive 3D viewer (Rust)
+
+You can orbit and tweak joints in 3D using the `interactive_gui` example. Supply a URDF path and, optionally, a CSV trajectory for playback:
+
+```bash
+cargo run --example interactive_gui -- examples/three_link_capsule.urdf examples/wave.csv
+```
+
+- Use the mouse to orbit and scroll to zoom.
+- Left/Right keys select the active joint; Up/Down adjust its angle.
+- Press `Space` to toggle trajectory playback when a CSV was provided.
 
 The `examples/` directory contains a small three-link arm URDF (`three_link_capsule.urdf`) built from capsule geometry (cylinders with spherical end-caps) and a short CSV trajectory (`wave.csv`) so you can try the renderer without hunting for assets. The sample uses only built-in primitive geometry, so there are no extra mesh files to resolve.
 

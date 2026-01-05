@@ -136,13 +136,11 @@ pub struct RoboRenderer {
     visuals: HashMap<String, Vec<VisualElement>>, // keyed by link name
 }
 
-#[cfg(feature = "python")]
-#[pymethods]
 impl RoboRenderer {
-    #[new]
-    pub fn new(urdf_path: &str) -> PyResult<Self> {
-        let robot = urdf_rs::read_file(urdf_path)
-            .map_err(|e| PyErr::from(RoboMeshError::UrdfLoad(e.to_string())))?;
+    /// Construct a renderer directly from a URDF path without requiring Python bindings.
+    pub fn from_urdf_path(urdf_path: &str) -> Result<Self, RoboMeshError> {
+        let robot =
+            urdf_rs::read_file(urdf_path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
         let chain =
             Chain::from_urdf_file(urdf_path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
         let visuals = load_visuals(&robot, Some(urdf_path))?;
@@ -152,6 +150,34 @@ impl RoboRenderer {
             joint_names,
             visuals,
         })
+    }
+
+    /// Update joint positions using a mapping from joint name to target angle.
+    pub fn set_joint_positions(&mut self, map: &HashMap<String, f32>) -> Result<(), RoboMeshError> {
+        apply_joint_map(&mut self.chain, &self.joint_names, map)
+    }
+
+    /// Retrieve joint-space positions and parent links in world coordinates.
+    pub fn link_positions(&self) -> Result<Vec<(Point3<f32>, Option<Point3<f32>>)>, RoboMeshError> {
+        collect_points(&self.chain)
+    }
+
+    /// Collect transformed visual meshes for every link in world coordinates.
+    pub fn visual_meshes(&self) -> Result<Vec<MeshData>, RoboMeshError> {
+        collect_visual_meshes(&self.chain, &self.visuals)
+    }
+
+    pub fn joint_order(&self) -> Vec<String> {
+        self.joint_names.clone()
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl RoboRenderer {
+    #[new]
+    pub fn new(urdf_path: &str) -> PyResult<Self> {
+        Self::from_urdf_path(urdf_path).map_err(PyErr::from)
     }
 
     #[staticmethod]
@@ -176,9 +202,9 @@ impl RoboRenderer {
         output_path: &str,
     ) -> PyResult<()> {
         let map = parse_joint_map(joint_positions)?;
-        apply_joint_map(&mut self.chain, &self.joint_names, &map)?;
-        let skeleton = collect_points(&self.chain)?;
-        let visuals = collect_visual_meshes(&self.chain, &self.visuals)?;
+        self.set_joint_positions(&map)?;
+        let skeleton = self.link_positions()?;
+        let visuals = self.visual_meshes()?;
         draw_scene(&skeleton, &visuals, output_path).map_err(PyErr::from)
     }
 
@@ -191,9 +217,9 @@ impl RoboRenderer {
         let frames = parse_trajectory(trajectory)?;
         fs::create_dir_all(output_dir)?;
         for (idx, frame) in frames.iter().enumerate() {
-            apply_joint_map(&mut self.chain, &self.joint_names, &frame.positions)?;
-            let points = collect_points(&self.chain)?;
-            let visuals = collect_visual_meshes(&self.chain, &self.visuals)?;
+            self.set_joint_positions(&frame.positions)?;
+            let points = self.link_positions()?;
+            let visuals = self.visual_meshes()?;
             let out = format!("{}/frame_{:04}.png", output_dir, idx);
             draw_scene(&points, &visuals, &out).map_err(PyErr::from)?;
         }
@@ -206,9 +232,9 @@ impl RoboRenderer {
         let frames = load_csv_trajectory(csv_path, &self.joint_names)?;
         fs::create_dir_all(output_dir)?;
         for (idx, frame) in frames.iter().enumerate() {
-            apply_joint_map(&mut self.chain, &self.joint_names, &frame.positions)?;
-            let points = collect_points(&self.chain)?;
-            let visuals = collect_visual_meshes(&self.chain, &self.visuals)?;
+            self.set_joint_positions(&frame.positions)?;
+            let points = self.link_positions()?;
+            let visuals = self.visual_meshes()?;
             let out = format!("{}/frame_{:04}.png", output_dir, idx);
             draw_scene(&points, &visuals, &out).map_err(PyErr::from)?;
         }
@@ -270,7 +296,7 @@ fn chain_from_urdf_str(urdf: &str) -> PyResult<Chain<f32>> {
     Ok(chain)
 }
 
-fn load_csv_trajectory(
+pub fn load_csv_trajectory(
     path: &str,
     expected_joints: &[String],
 ) -> Result<Vec<JointFrame>, RoboMeshError> {
