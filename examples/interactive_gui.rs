@@ -111,6 +111,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             window.draw_point(&child_point, &color);
         }
 
+        // Draw the visual meshes in world space so the robot model appears.
+        if let Ok(meshes) = renderer.visual_meshes() {
+            for mesh in meshes {
+                let verts: Vec<Point3<f32>> = mesh
+                    .vertices
+                    .iter()
+                    .map(|v| Point3::new(v[0], v[1], v[2]))
+                    .collect();
+                for [a, b, c] in mesh.indices {
+                    let pa = verts[a as usize];
+                    let pb = verts[b as usize];
+                    let pc = verts[c as usize];
+                    // Wireframe triangles for now to avoid extra buffers/textures.
+                    window.draw_line(&pa, &pb, &Point3::new(0.6, 0.6, 0.6));
+                    window.draw_line(&pb, &pc, &Point3::new(0.6, 0.6, 0.6));
+                    window.draw_line(&pc, &pa, &Point3::new(0.6, 0.6, 0.6));
+                }
+            }
+        }
+
         // Small ground hint for spatial context
         for i in -5..=5 {
             let x = i as f32 * 0.1;
