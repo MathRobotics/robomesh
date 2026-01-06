@@ -1,14 +1,12 @@
-#![cfg_attr(not(feature = "python"), allow(dead_code))]
-
+use std::time::SystemTime;
 use std::{
     collections::HashMap,
-    fs::File,
+    env,
+    fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
+    process,
 };
-
-#[cfg(feature = "python")]
-use std::{env, fs, process, time::SystemTime};
 
 use csv::StringRecord;
 use image::{ImageBuffer, Rgba};
@@ -17,9 +15,6 @@ use k::Chain;
 use serde::Deserialize;
 use thiserror::Error;
 use urdf_rs::Robot;
-
-#[cfg(feature = "python")]
-use pyo3::{exceptions::PyValueError, prelude::*};
 
 #[derive(Debug, Error)]
 pub enum RoboMeshError {
@@ -37,13 +32,6 @@ pub enum RoboMeshError {
     Render(String),
     #[error("Mesh load error: {0}")]
     Mesh(String),
-}
-
-#[cfg(feature = "python")]
-impl From<RoboMeshError> for PyErr {
-    fn from(value: RoboMeshError) -> Self {
-        PyValueError::new_err(value.to_string())
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,7 +117,6 @@ impl Default for MeshTessellation {
     }
 }
 
-#[cfg_attr(feature = "python", pyclass)]
 pub struct RoboRenderer {
     chain: Chain<f32>,
     joint_names: Vec<String>,
@@ -144,6 +131,20 @@ impl RoboRenderer {
         let chain =
             Chain::from_urdf_file(urdf_path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
         let visuals = load_visuals(&robot, Some(urdf_path))?;
+        let joint_names = chain.iter_joints().map(|j| j.name.clone()).collect();
+        Ok(Self {
+            chain,
+            joint_names,
+            visuals,
+        })
+    }
+
+    /// Construct a renderer from a URDF string without touching the filesystem.
+    pub fn from_urdf_str(urdf: &str) -> Result<Self, RoboMeshError> {
+        let robot =
+            urdf_rs::read_from_string(urdf).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
+        let chain = chain_from_urdf_str(urdf)?;
+        let visuals = load_visuals(&robot, None)?;
         let joint_names = chain.iter_joints().map(|j| j.name.clone()).collect();
         Ok(Self {
             chain,
@@ -170,130 +171,45 @@ impl RoboRenderer {
     pub fn joint_order(&self) -> Vec<String> {
         self.joint_names.clone()
     }
-}
 
-#[cfg(feature = "python")]
-#[pymethods]
-impl RoboRenderer {
-    #[new]
-    pub fn new(urdf_path: &str) -> PyResult<Self> {
-        Self::from_urdf_path(urdf_path).map_err(PyErr::from)
-    }
-
-    #[staticmethod]
-    pub fn from_urdf_string(urdf: &str) -> PyResult<Self> {
-        let robot = urdf_rs::read_from_string(urdf)
-            .map_err(|e| PyErr::from(RoboMeshError::UrdfLoad(e.to_string())))?;
-        let chain = chain_from_urdf_str(urdf)?;
-        let visuals = load_visuals(&robot, None)?;
-        let joint_names = chain.iter_joints().map(|j| j.name.clone()).collect();
-        Ok(Self {
-            chain,
-            joint_names,
-            visuals,
-        })
-    }
-
-    /// Render a single frame into a PNG file.
-    /// `joint_positions` can be a mapping or JSON string.
-    pub fn render_frame(
+    /// Render a single frame to disk using the provided joint positions.
+    pub fn render_frame_to_path(
         &mut self,
-        joint_positions: &Bound<'_, PyAny>,
+        joint_positions: &HashMap<String, f32>,
         output_path: &str,
-    ) -> PyResult<()> {
-        let map = parse_joint_map(joint_positions)?;
-        self.set_joint_positions(&map)?;
+    ) -> Result<(), RoboMeshError> {
+        self.set_joint_positions(joint_positions)?;
         let skeleton = self.link_positions()?;
         let visuals = self.visual_meshes()?;
-        draw_scene(&skeleton, &visuals, output_path).map_err(PyErr::from)
+        draw_scene(&skeleton, &visuals, output_path)
     }
 
-    /// Render a list of joint frames (list of dicts) into numbered PNG files.
-    pub fn render_trajectory(
+    /// Render a collection of joint frames into sequentially numbered PNG files.
+    pub fn render_frames_to_dir(
         &mut self,
-        trajectory: &Bound<'_, PyAny>,
+        frames: &[JointFrame],
         output_dir: &str,
-    ) -> PyResult<()> {
-        let frames = parse_trajectory(trajectory)?;
+    ) -> Result<(), RoboMeshError> {
         fs::create_dir_all(output_dir)?;
         for (idx, frame) in frames.iter().enumerate() {
             self.set_joint_positions(&frame.positions)?;
             let points = self.link_positions()?;
             let visuals = self.visual_meshes()?;
             let out = format!("{}/frame_{:04}.png", output_dir, idx);
-            draw_scene(&points, &visuals, &out).map_err(PyErr::from)?;
+            draw_scene(&points, &visuals, &out)?;
         }
         Ok(())
     }
 
-    /// Render a trajectory provided as a CSV file with headers matching joint names.
-    /// A column named "time" is optional and ignored for rendering.
-    pub fn render_trajectory_csv(&mut self, csv_path: &str, output_dir: &str) -> PyResult<()> {
+    /// Render a CSV trajectory into sequential PNG files.
+    pub fn render_trajectory_csv(
+        &mut self,
+        csv_path: &str,
+        output_dir: &str,
+    ) -> Result<(), RoboMeshError> {
         let frames = load_csv_trajectory(csv_path, &self.joint_names)?;
-        fs::create_dir_all(output_dir)?;
-        for (idx, frame) in frames.iter().enumerate() {
-            self.set_joint_positions(&frame.positions)?;
-            let points = self.link_positions()?;
-            let visuals = self.visual_meshes()?;
-            let out = format!("{}/frame_{:04}.png", output_dir, idx);
-            draw_scene(&points, &visuals, &out).map_err(PyErr::from)?;
-        }
-        Ok(())
+        self.render_frames_to_dir(&frames, output_dir)
     }
-
-    pub fn joint_order(&self) -> Vec<String> {
-        self.joint_names.clone()
-    }
-}
-
-#[cfg(feature = "python")]
-fn parse_joint_map(obj: &Bound<'_, PyAny>) -> PyResult<HashMap<String, f32>> {
-    if let Ok(map) = obj.extract::<HashMap<String, f32>>() {
-        return Ok(map);
-    }
-    if let Ok(json) = obj.extract::<String>() {
-        let frame: HashMap<String, f32> = serde_json::from_str(&json)
-            .map_err(|e| PyValueError::new_err(format!("Failed to parse joint map: {e}")))?;
-        return Ok(frame);
-    }
-    Err(PyValueError::new_err(
-        "joint_positions must be a mapping or JSON string",
-    ))
-}
-
-#[cfg(feature = "python")]
-fn parse_trajectory(obj: &Bound<'_, PyAny>) -> PyResult<Vec<JointFrame>> {
-    if let Ok(list) = obj.extract::<Vec<HashMap<String, f32>>>() {
-        return Ok(list
-            .into_iter()
-            .map(|positions| JointFrame {
-                positions,
-                time: None,
-            })
-            .collect());
-    }
-    if let Ok(json) = obj.extract::<String>() {
-        let frames: Vec<JointFrame> = serde_json::from_str(&json)
-            .map_err(|e| PyValueError::new_err(format!("Failed to parse trajectory: {e}")))?;
-        return Ok(frames);
-    }
-    Err(PyValueError::new_err(
-        "trajectory must be a list of mappings or JSON string",
-    ))
-}
-
-#[cfg(feature = "python")]
-fn chain_from_urdf_str(urdf: &str) -> PyResult<Chain<f32>> {
-    let mut path = env::temp_dir();
-    let unique = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?
-        .as_nanos();
-    path.push(format!("robomesh_{}_{}.urdf", process::id(), unique));
-    fs::write(&path, urdf).map_err(|e| PyErr::from(RoboMeshError::UrdfLoad(e.to_string())))?;
-    let chain = Chain::from_urdf_file(&path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
-    let _ = fs::remove_file(&path);
-    Ok(chain)
 }
 
 pub fn load_csv_trajectory(
@@ -346,6 +262,19 @@ pub fn load_csv_trajectory(
     }
 
     Ok(frames)
+}
+
+fn chain_from_urdf_str(urdf: &str) -> Result<Chain<f32>, RoboMeshError> {
+    let mut path = env::temp_dir();
+    let unique = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?
+        .as_nanos();
+    path.push(format!("robomesh_{}_{}.urdf", process::id(), unique));
+    fs::write(&path, urdf).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
+    let chain = Chain::from_urdf_file(&path).map_err(|e| RoboMeshError::UrdfLoad(e.to_string()))?;
+    let _ = fs::remove_file(&path);
+    Ok(chain)
 }
 
 fn parse_f32_from_record(
@@ -1201,11 +1130,4 @@ mod tests {
         assert_eq!(expected.vertices, actual.vertices);
         assert_eq!(expected.indices, actual.indices);
     }
-}
-
-#[cfg(feature = "python")]
-#[pymodule]
-fn robomesh(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<RoboRenderer>()?;
-    Ok(())
 }

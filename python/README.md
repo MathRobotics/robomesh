@@ -15,7 +15,7 @@ From this `python/` directory:
 uv sync
 
 # Build and install the robomesh extension into the uv environment
-uv run maturin develop --manifest-path ../Cargo.toml --features python
+uv run maturin develop
 
 # Try rendering from Python
 uv run python - <<'PY'
@@ -50,5 +50,5 @@ The mesh sample (`examples/mesh_sample.urdf`) references a small OBJ (`examples/
 
 ## Notes
 - The Rust crate remains the single source of functionality; this directory only orchestrates Python packaging and environment management.
-- `uv run maturin build --features python` produces a Python wheel that you can distribute or install with `pip`.
+- `uv run maturin build` produces a Python wheel that you can distribute or install with `pip`.
 - If you regenerate lock files with uv, commit them alongside this directory to keep Python dependencies reproducible.

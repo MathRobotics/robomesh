@@ -7,12 +7,7 @@ edition = "2021"
 name = "robomesh"
 crate-type = ["cdylib", "rlib"]
 
-[features]
-default = []
-python = ["pyo3", "pyo3/extension-module"]
-
 [dependencies]
-pyo3 = { version = "0.22", optional = true }
 urdf-rs = "0.6"
 k = "0.32"
 nalgebra = { version = "0.30", features = ["serde-serialize"] }

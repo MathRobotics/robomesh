@@ -26,10 +26,9 @@ classifiers = [
 dependencies = []
 
 [tool.maturin]
-manifest-path = "../Cargo.toml"
+manifest-path = "Cargo.toml"
 bindings = "pyo3"
 module-name = "robomesh"
-features = ["python"]
 
 [dependency-groups]
 dev = [
