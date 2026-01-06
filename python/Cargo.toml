@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2021"
 
 [lib]
-name = "robomesh"
+name = "robomesh_python"
 crate-type = ["cdylib"]
 path = "src/lib.rs"
 
